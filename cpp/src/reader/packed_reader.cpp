@@ -12,18 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "packed/reader.h"
+#include "reader/packed_reader.h"
 #include <arrow/array/array_base.h>
 #include <arrow/status.h>
 #include <arrow/table.h>
 #include <parquet/properties.h>
-#include <iostream>
 #include <queue>
-#include <utility>
 #include "common/arrow_util.h"
-#include "test_util.h"
-
-using parquet::arrow::FileReader;
 
 namespace milvus_storage {
 
@@ -32,7 +27,7 @@ PackedRecordBatchReader::PackedRecordBatchReader(arrow::fs::FileSystem& fs,
                                                  std::shared_ptr<arrow::Schema> schema,
                                                  std::vector<std::pair<int, int>>& column_offsets,
                                                  std::vector<int>& needed_columns,
-                                                 int64_t buffer_size)
+                                                 size_t buffer_size)
     : fs_(fs), paths_(paths), schema_(std::move(schema)), needed_columns_(needed_columns), buffer_size_(buffer_size) {
   buffer_available_ = buffer_size_;
 
@@ -59,14 +54,14 @@ arrow::Status PackedRecordBatchReader::openInternal() {
     file_readers_.emplace_back(std::move(res.value()));
   }
   row_group_offsets_ = std::vector<int>(file_readers_.size(), -1);
-  row_offsets_ = std::vector<int64_t>(file_readers_.size(), 0);
-  table_memory_sizes_ = std::vector<int64_t>(file_readers_.size(), 0);
+  row_offsets_ = std::vector<size_t>(file_readers_.size(), 0);
+  table_memory_sizes_ = std::vector<size_t>(file_readers_.size(), 0);
   tables_ = std::vector<std::shared_ptr<arrow::Table>>(
       paths_.size(), nullptr);  // tables are referrenced by column_offsets, so it's size is of paths_'s size.
   limit_ = 0;
   absolute_row_position_ = 0;
   chunk_numbers_ = std::vector<int>(needed_columns_.size(), 0);
-  chunk_offsets_ = std::vector<int64_t>(needed_columns_.size(), 0);
+  chunk_offsets_ = std::vector<size_t>(needed_columns_.size(), 0);
   return arrow::Status::OK();
 }
 

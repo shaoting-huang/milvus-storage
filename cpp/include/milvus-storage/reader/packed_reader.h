@@ -22,13 +22,12 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "storage/options.h"
 
 namespace milvus_storage {
 
 // Default number of rows to read when using ::arrow::RecordBatchReader
-static constexpr int64_t DefaultBatchSize = 1024;
-static constexpr int64_t DefaultBufferSize = 16 * 1024 * 1024;
+static constexpr size_t DefaultBatchSize = 1024;
+static constexpr size_t DefaultBufferSize = 16 * 1024 * 1024;
 
 class PackedRecordBatchReader : public arrow::RecordBatchReader {
   public:
@@ -37,7 +36,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
                           std::shared_ptr<arrow::Schema> schema,
                           std::vector<std::pair<int, int>>& column_offsets,
                           std::vector<int>& needed_columns,
-                          int64_t buffer_size = DefaultBufferSize);
+                          size_t buffer_size = DefaultBufferSize);
 
   std::shared_ptr<arrow::Schema> schema() const override;
 
@@ -64,15 +63,15 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
 
   // Internal table states
   std::vector<std::shared_ptr<arrow::Table>> tables_;
-  int64_t limit_;
-  std::vector<int64_t> row_offsets_;
+  size_t limit_;
+  std::vector<size_t> row_offsets_;
   std::vector<int> row_group_offsets_;
-  std::vector<int64_t> table_memory_sizes_;
+  std::vector<size_t> table_memory_sizes_;
 
   // Internal chunking states
   std::vector<int> chunk_numbers_;
-  std::vector<int64_t> chunk_offsets_;
-  int64_t absolute_row_position_;
+  std::vector<size_t> chunk_offsets_;
+  size_t absolute_row_position_;
 };
 
 }  // namespace milvus_storage

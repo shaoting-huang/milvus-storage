@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <memory>
-#include <type_traits>
 #include <utility>
 #include <arrow/type.h>
 #include <arrow/type_fwd.h>
@@ -23,18 +22,17 @@
 #include <gtest/gtest.h>
 #include <parquet/arrow/writer.h>
 #include "gmock/gmock.h"
-#include "packed/reader.h"
+#include "reader/packed_reader.h"
 #include "test_util.h"
 #include "arrow/table.h"
 #include "common/fs_util.h"
 
 namespace milvus_storage {
+
 TEST(PackedRecordBatchReaderTest, ReadTest) {
   auto arrow_schema = CreateArrowSchema({"pk_field"}, {arrow::int64()});
   arrow::Int64Builder pk_builder;
-  ASSERT_STATUS_OK(pk_builder.Append(1));
-  ASSERT_STATUS_OK(pk_builder.Append(2));
-  ASSERT_STATUS_OK(pk_builder.Append(3));
+  ASSERT_STATUS_OK(pk_builder.AppendValues({1, 2, 3}));
   std::shared_ptr<arrow::Array> pk_array;
   ASSERT_STATUS_OK(pk_builder.Finish(&pk_array));
   auto rec_batch = arrow::RecordBatch::Make(arrow_schema, 3, {pk_array});
@@ -49,9 +47,7 @@ TEST(PackedRecordBatchReaderTest, ReadTest) {
 
   arrow_schema = CreateArrowSchema({"json_field"}, {arrow::utf8()});
   arrow::StringBuilder builder;
-  ASSERT_STATUS_OK(builder.Append("foo"));
-  ASSERT_STATUS_OK(builder.Append("bar"));
-  ASSERT_STATUS_OK(builder.Append("foo"));
+  ASSERT_STATUS_OK(builder.AppendValues({"foo", "bar", "foo"}));
   std::shared_ptr<arrow::Array> json_array;
   ASSERT_STATUS_OK(builder.Finish(&json_array));
   rec_batch = arrow::RecordBatch::Make(arrow_schema, 3, {json_array});
