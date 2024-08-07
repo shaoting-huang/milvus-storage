@@ -29,9 +29,7 @@ namespace milvus_storage {
 
 class SizeBasedSplitterTest : public SplitterTestBase {
   protected:
-  void SetUp() override {
-    SetUpCommonData();
-  }
+  void SetUp() override { SetUpCommonData(); }
 };
 
 TEST_F(SizeBasedSplitterTest, SplitColumnsTest) {

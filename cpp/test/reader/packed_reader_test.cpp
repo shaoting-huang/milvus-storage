@@ -60,7 +60,7 @@ TEST(PackedRecordBatchReaderTest, ReadTest) {
 
   auto paths = std::vector{std::string("/tmp/f1"), std::string("/tmp/f2")};
   auto schema = CreateArrowSchema({"pk_field", "json_field"}, {arrow::int64(), arrow::utf8()});
-  auto column_offsets = std::vector{std::pair<int, int>(0, 0), std::pair<int, int>(1, 0)};
+  auto column_offsets = std::vector{ColumnOffset(0, 0), ColumnOffset(1, 0)};
   auto needed_columns = std::vector{0, 1};
   PackedRecordBatchReader pr(*fs, paths, schema, column_offsets, needed_columns);
 

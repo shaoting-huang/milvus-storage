@@ -35,15 +35,17 @@ class SplitterTestBase : public ::testing::Test {
 
     ASSERT_STATUS_OK(int_builder.AppendValues({1, 2, 3}));
     ASSERT_STATUS_OK(int64_builder.AppendValues({1, 2, 3}));
-    ASSERT_STATUS_OK(str_builder.AppendValues({std::string(10000, 'a'), std::string(10000, 'b'), std::string(10000, 'c')}));
+    ASSERT_STATUS_OK(
+        str_builder.AppendValues({std::string(10000, 'a'), std::string(10000, 'b'), std::string(10000, 'c')}));
 
     ASSERT_STATUS_OK(int_builder.Finish(&int_array_));
     ASSERT_STATUS_OK(int64_builder.Finish(&int64_array_));
     ASSERT_STATUS_OK(str_builder.Finish(&str_array_));
 
-    fields_ = {arrow::field("int", arrow::int32()), arrow::field("int64", arrow::int64()), arrow::field("str", arrow::utf8())};
+    fields_ = {arrow::field("int", arrow::int32()), arrow::field("int64", arrow::int64()),
+               arrow::field("str", arrow::utf8())};
     arrays_ = {int_array_, int64_array_, str_array_};
-    
+
     schema_ = arrow::schema(fields_);
     record_batch_ = arrow::RecordBatch::Make(schema_, 3, arrays_);
   }
@@ -57,4 +59,4 @@ class SplitterTestBase : public ::testing::Test {
   std::shared_ptr<arrow::RecordBatch> record_batch_;
 };
 
-} // namespace milvus_storage
+}  // namespace milvus_storage

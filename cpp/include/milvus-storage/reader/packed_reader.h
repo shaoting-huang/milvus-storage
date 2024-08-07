@@ -25,6 +25,13 @@
 
 namespace milvus_storage {
 
+struct ColumnOffset {
+  int file_index;
+  int column_index;
+
+  ColumnOffset(int file_index, int column_index) : file_index(file_index), column_index(column_index) {}
+};
+
 // Default number of rows to read when using ::arrow::RecordBatchReader
 static constexpr size_t DefaultBatchSize = 1024;
 static constexpr size_t DefaultBufferSize = 16 * 1024 * 1024;
@@ -34,7 +41,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   PackedRecordBatchReader(arrow::fs::FileSystem& fs,
                           std::vector<std::string>& paths,
                           std::shared_ptr<arrow::Schema> schema,
-                          std::vector<std::pair<int, int>>& column_offsets,
+                          std::vector<ColumnOffset>& column_offsets,
                           std::vector<int>& needed_columns,
                           size_t buffer_size = DefaultBufferSize);
 
@@ -45,7 +52,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   protected:
   private:
   // Advance buffer to fill the expected buffer size
-  arrow::Status advance_buffer();
+  arrow::Status advanceBuffer();
   // Open file readers
   arrow::Status openInternal();
 
@@ -58,7 +65,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   std::set<int> needed_path_indices_;
   std::shared_ptr<arrow::Schema> schema_;
   std::vector<std::unique_ptr<parquet::arrow::FileReader>> file_readers_;
-  std::vector<std::pair<int, int>> needed_column_offsets_;
+  std::vector<ColumnOffset> needed_column_offsets_;
   std::vector<int> needed_columns_;
 
   // Internal table states
