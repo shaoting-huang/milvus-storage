@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <queue>
 
 namespace milvus_storage {
 
@@ -32,6 +33,12 @@ struct ColumnOffset {
 
   ColumnOffset(int file_index, int column_index) : file_index(file_index), column_index(column_index) {}
 };
+
+struct ColumnOffsetComparator {
+  bool operator()(const ColumnOffset& a, const ColumnOffset& b) const { return a.column_index < b.column_index; }
+};
+
+using ColumnOffsetMinHeap = std::priority_queue<ColumnOffset, std::vector<ColumnOffset>, ColumnOffsetComparator>;
 
 struct TableState {
   int64_t row_offset;
@@ -77,34 +84,28 @@ static constexpr int64_t DefaultBufferSize = 16 * 1024 * 1024;
 class PackedRecordBatchReader : public arrow::RecordBatchReader {
   public:
   PackedRecordBatchReader(arrow::fs::FileSystem& fs,
-                          std::vector<std::string>& paths,
-                          std::shared_ptr<arrow::Schema> schema,
-                          std::vector<ColumnOffset>& column_offsets,
-                          std::vector<int>& needed_columns,
-                          int64_t buffer_size = DefaultBufferSize);
+                          const std::vector<std::string>& paths,
+                          const std::shared_ptr<arrow::Schema> schema,
+                          const std::vector<ColumnOffset>& column_offsets,
+                          const std::vector<int>& needed_columns,
+                          const int64_t buffer_size = DefaultBufferSize);
 
   std::shared_ptr<arrow::Schema> schema() const override;
 
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override;
 
-  protected:
   private:
   // Advance buffer to fill the expected buffer size
   arrow::Status advanceBuffer();
-  // Open file readers
-  arrow::Status openInternal();
 
-  size_t buffer_size_;
+  private:
+  const size_t buffer_size_;
+  const std::shared_ptr<arrow::Schema> schema_;
+
   size_t buffer_available_;
-
   // Files
-  arrow::fs::FileSystem& fs_;
-  std::vector<std::string>& paths_;
-  std::set<int> needed_path_indices_;
-  std::shared_ptr<arrow::Schema> schema_;
   std::vector<std::unique_ptr<parquet::arrow::FileReader>> file_readers_;
   std::vector<ColumnOffset> needed_column_offsets_;
-  std::vector<int> needed_columns_;
 
   std::vector<std::shared_ptr<arrow::Table>> tables_;
   std::vector<TableState> table_states_;
@@ -112,6 +113,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
 
   std::vector<ChunkState> chunk_states_;
   int64_t absolute_row_position_;
+  ColumnOffsetMinHeap sorted_offsets_;
 };
 
 }  // namespace milvus_storage

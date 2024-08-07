@@ -23,63 +23,57 @@
 namespace milvus_storage {
 
 PackedRecordBatchReader::PackedRecordBatchReader(arrow::fs::FileSystem& fs,
-                                                 std::vector<std::string>& paths,
-                                                 std::shared_ptr<arrow::Schema> schema,
-                                                 std::vector<ColumnOffset>& column_offsets,
-                                                 std::vector<int>& needed_columns,
-                                                 int64_t buffer_size)
-    : fs_(fs), paths_(paths), schema_(std::move(schema)), needed_columns_(needed_columns), buffer_size_(buffer_size) {
-  buffer_available_ = buffer_size_;
-
+                                                 const std::vector<std::string>& paths,
+                                                 const std::shared_ptr<arrow::Schema> schema,
+                                                 const std::vector<ColumnOffset>& column_offsets,
+                                                 const std::vector<int>& needed_columns,
+                                                 const int64_t buffer_size)
+    : schema_(std::move(schema)),
+      buffer_size_(buffer_size),
+      buffer_available_(buffer_size_),
+      limit_(0),
+      absolute_row_position_(0) {
+  std::set<int> needed_path_indices;
   for (int i : needed_columns) {
     needed_column_offsets_.push_back(column_offsets[i]);
-    needed_path_indices_.insert(column_offsets[i].file_index);
+    needed_path_indices.insert(column_offsets[i].file_index);
   }
+
+  for (int i = 0; i < paths.size(); i++) {
+    if (needed_path_indices.find(i) == needed_path_indices.end()) {
+      continue;
+    }
+    // PreBuffer is turned on by default
+    auto result = MakeArrowFileReader(fs, paths[i]);
+    if (!result.ok()) {
+      throw std::runtime_error(result.status().ToString());
+    }
+    file_readers_.emplace_back(std::move(result.value()));
+  }
+
+  // Initialize table states and chunk states
+  table_states_.assign(file_readers_.size(), TableState(0, -1, 0));
+  // tables are referrenced by column_offsets, so it's size is of paths's size.
+  tables_.assign(paths.size(), nullptr);
+  chunk_states_.assign(needed_column_offsets_.size(), ChunkState(0, 0));
 }
 
 std::shared_ptr<arrow::Schema> PackedRecordBatchReader::schema() const { return schema_; }
 
-arrow::Status PackedRecordBatchReader::openInternal() {
-  // auto read_properties = parquet::default_arrow_reader_properties();
-  // read_properties.set_pre_buffer(true);
-  for (int i = 0; i < paths_.size(); i++) {
-    // auto res = MakeArrowFileReader(fs_, path, read_properties);
-    if (needed_path_indices_.find(i) == needed_path_indices_.end()) {
-      continue;
-    }
-    auto res = MakeArrowFileReader(fs_, paths_[i]);  // PreBuffer is turned on by default
-    if (!res.ok()) {
-      throw std::runtime_error(res.status().ToString());
-    }
-    file_readers_.emplace_back(std::move(res.value()));
-  }
-  table_states_.assign(file_readers_.size(), TableState(0, -1, 0));
-  tables_.assign(paths_.size(),
-                 nullptr);  // tables are referrenced by column_offsets, so it's size is of paths_'s size.
-  limit_ = 0;
-  absolute_row_position_ = 0;
-  chunk_states_.assign(needed_columns_.size(), ChunkState(0, 0));
-  return arrow::Status::OK();
-}
-
 arrow::Status PackedRecordBatchReader::advanceBuffer() {
-  if (file_readers_.empty()) {
-    RETURN_NOT_OK(openInternal());
-  }
-
   std::vector<std::vector<int>> rgs_to_read(file_readers_.size(), std::vector<int>());
   size_t plan_buffer_size = 0;
 
-  auto advance_row_group = [&](int file_index) {
-    auto& reader = file_readers_[file_index];
-    int rg = table_states_[file_index].row_group_offset + 1;
+  auto advance_row_group = [&](int i) {
+    auto& reader = file_readers_[i];
+    int rg = table_states_[i].row_group_offset + 1;
     if (rg < reader->parquet_reader()->metadata()->num_row_groups()) {
-      rgs_to_read[file_index].push_back(rg);
+      rgs_to_read[i].push_back(rg);
       int64_t rg_size = reader->parquet_reader()->metadata()->RowGroup(rg)->total_byte_size();
       plan_buffer_size += rg_size;
-      table_states_[file_index].addMemorySize(rg_size);
-      table_states_[file_index].setRowGroupOffset(rg);
-      table_states_[file_index].addRowOffset(reader->parquet_reader()->metadata()->RowGroup(rg)->num_rows());
+      table_states_[i].addMemorySize(rg_size);
+      table_states_[i].setRowGroupOffset(rg);
+      table_states_[i].addRowOffset(reader->parquet_reader()->metadata()->RowGroup(rg)->num_rows());
       return rg;
     }
     // No more row groups. It means we're done or there is an error.
@@ -92,7 +86,7 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
     if (table_states_[i].row_offset > limit_) {
       continue;
     }
-    buffer_available_ += table_states_[i].memory_size;  // Release memory
+    buffer_available_ += table_states_[i].memory_size;
     table_states_[i].resetMemorySize();
     int rg = advance_row_group(i);
     if (rg < 0) {
@@ -112,11 +106,7 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
 
   // Fill in tables if we have enough buffer size
   // find the lowest offset table and advance it
-  auto compareColumnOffset = [](const ColumnOffset& a, const ColumnOffset& b) {
-    return a.column_index < b.column_index;
-  };
-  std::priority_queue<ColumnOffset, std::vector<ColumnOffset>, decltype(compareColumnOffset)> sorted_offsets(
-      compareColumnOffset);
+  ColumnOffsetMinHeap sorted_offsets;
   for (int i = 0; i < table_states_.size(); ++i) {
     sorted_offsets.emplace(i, table_states_[i].row_offset);
   }
