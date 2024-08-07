@@ -27,7 +27,7 @@ PackedRecordBatchReader::PackedRecordBatchReader(arrow::fs::FileSystem& fs,
                                                  std::shared_ptr<arrow::Schema> schema,
                                                  std::vector<ColumnOffset>& column_offsets,
                                                  std::vector<int>& needed_columns,
-                                                 size_t buffer_size)
+                                                 int64_t buffer_size)
     : fs_(fs), paths_(paths), schema_(std::move(schema)), needed_columns_(needed_columns), buffer_size_(buffer_size) {
   buffer_available_ = buffer_size_;
 
@@ -53,15 +53,12 @@ arrow::Status PackedRecordBatchReader::openInternal() {
     }
     file_readers_.emplace_back(std::move(res.value()));
   }
-  row_group_offsets_.assign(file_readers_.size(), -1);
-  row_offsets_.assign(file_readers_.size(), 0);
-  table_memory_sizes_.assign(file_readers_.size(), 0);
+  table_states_.assign(file_readers_.size(), TableState(0, -1, 0));
   tables_.assign(paths_.size(),
                  nullptr);  // tables are referrenced by column_offsets, so it's size is of paths_'s size.
   limit_ = 0;
   absolute_row_position_ = 0;
-  chunk_numbers_.assign(needed_columns_.size(), 0);
-  chunk_offsets_.assign(needed_columns_.size(), 0);
+  chunk_states_.assign(needed_columns_.size(), ChunkState(0, 0));
   return arrow::Status::OK();
 }
 
@@ -75,14 +72,14 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
 
   auto advance_row_group = [&](int file_index) {
     auto& reader = file_readers_[file_index];
-    int rg = row_group_offsets_[file_index] + 1;
+    int rg = table_states_[file_index].row_group_offset + 1;
     if (rg < reader->parquet_reader()->metadata()->num_row_groups()) {
       rgs_to_read[file_index].push_back(rg);
       int64_t rg_size = reader->parquet_reader()->metadata()->RowGroup(rg)->total_byte_size();
       plan_buffer_size += rg_size;
-      table_memory_sizes_[file_index] += rg_size;
-      row_group_offsets_[file_index] = rg;
-      row_offsets_[file_index] += reader->parquet_reader()->metadata()->RowGroup(rg)->num_rows();
+      table_states_[file_index].addMemorySize(rg_size);
+      table_states_[file_index].setRowGroupOffset(rg);
+      table_states_[file_index].addRowOffset(reader->parquet_reader()->metadata()->RowGroup(rg)->num_rows());
       return rg;
     }
     // No more row groups. It means we're done or there is an error.
@@ -92,11 +89,11 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
   // Fill in tables that have no rows available
   int drained_index = -1;
   for (int i = 0; i < file_readers_.size(); ++i) {
-    if (row_offsets_[i] > limit_) {
+    if (table_states_[i].row_offset > limit_) {
       continue;
     }
-    buffer_available_ += table_memory_sizes_[i];  // Release memory
-    table_memory_sizes_[i] = 0;
+    buffer_available_ += table_states_[i].memory_size;  // Release memory
+    table_states_[i].resetMemorySize();
     int rg = advance_row_group(i);
     if (rg < 0) {
       drained_index = i;
@@ -105,8 +102,7 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
     // TODO: reset chunk_numbers_
     for (int j = 0; j < needed_column_offsets_.size(); ++j) {
       if (needed_column_offsets_[j].file_index == i) {
-        chunk_numbers_[j] = 0;
-        chunk_offsets_[j] = 0;
+        chunk_states_[j].reset();
       }
     }
   }
@@ -121,13 +117,13 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
   };
   std::priority_queue<ColumnOffset, std::vector<ColumnOffset>, decltype(compareColumnOffset)> sorted_offsets(
       compareColumnOffset);
-  for (int i = 0; i < row_offsets_.size(); ++i) {
-    sorted_offsets.emplace(i, row_offsets_[i]);
+  for (int i = 0; i < table_states_.size(); ++i) {
+    sorted_offsets.emplace(i, table_states_[i].row_offset);
   }
   while (true) {
     ColumnOffset lowest_offset = sorted_offsets.top();
     int file_index = lowest_offset.file_index;
-    int rg = row_group_offsets_[file_index] + 1;
+    int rg = table_states_[file_index].row_group_offset + 1;
     auto& reader = file_readers_[file_index];
     if (rg < reader->parquet_reader()->metadata()->num_row_groups()) {
       int64_t size_in_plan = reader->parquet_reader()->metadata()->RowGroup(rg)->total_byte_size();
@@ -137,7 +133,7 @@ arrow::Status PackedRecordBatchReader::advanceBuffer() {
           break;
         }
         sorted_offsets.pop();
-        sorted_offsets.emplace(file_index, row_offsets_[file_index]);
+        sorted_offsets.emplace(file_index, table_states_[file_index].row_offset);
         continue;
       }
     }
@@ -164,15 +160,15 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
   }
 
   // Determine the maximum contiguous slice across all tables
-  size_t chunksize = std::min(limit_ - absolute_row_position_, DefaultBatchSize);
+  int64_t chunksize = std::min(limit_ - absolute_row_position_, DefaultBatchSize);
   std::vector<const arrow::Array*> chunks(needed_column_offsets_.size());
 
   for (int i = 0; i < needed_column_offsets_.size(); ++i) {
     int column_index = needed_column_offsets_[i].column_index;
     auto column = tables_[needed_column_offsets_[i].file_index]->column(column_index);
 
-    auto chunk = column->chunk(chunk_numbers_[i]).get();
-    size_t chunk_remaining = chunk->length() - chunk_offsets_[i];
+    auto chunk = column->chunk(chunk_states_[i].count).get();
+    int64_t chunk_remaining = chunk->length() - chunk_states_[i].offset;
 
     if (chunk_remaining < chunksize) {
       chunksize = chunk_remaining;
@@ -187,14 +183,14 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
   for (int i = 0; i < needed_column_offsets_.size(); ++i) {
     // Exhausted chunk
     auto chunk = chunks[i];
-    auto offset = chunk_offsets_[i];
+    auto offset = chunk_states_[i].offset;
     std::shared_ptr<arrow::ArrayData> slice_data;
     if (chunk->length() - offset == chunksize) {
-      ++chunk_numbers_[i];
-      chunk_offsets_[i] = 0;
+      chunk_states_[i].addCount(1);
+      chunk_states_[i].resetOffset();
       slice_data = (offset > 0) ? chunk->Slice(offset, chunksize)->data() : chunk->data();
     } else {
-      chunk_offsets_[i] += chunksize;
+      chunk_states_[i].addOffset(chunksize);
       slice_data = chunk->Slice(offset, chunksize)->data();
     }
     batch_data[i] = std::move(slice_data);

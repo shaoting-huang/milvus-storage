@@ -18,6 +18,7 @@
 #include <arrow/filesystem/filesystem.h>
 #include <arrow/record_batch.h>
 #include <cstddef>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <utility>
@@ -32,9 +33,46 @@ struct ColumnOffset {
   ColumnOffset(int file_index, int column_index) : file_index(file_index), column_index(column_index) {}
 };
 
+struct TableState {
+  int64_t row_offset;
+  int64_t row_group_offset;
+  int64_t memory_size;
+
+  TableState(int64_t row_offset, int64_t row_group_offset, int64_t memory_size)
+      : row_offset(row_offset), row_group_offset(row_group_offset), memory_size(memory_size) {}
+
+  void addRowOffset(int64_t row_offset) { this->row_offset += row_offset; }
+
+  void setRowGroupOffset(int64_t row_group_offset) { this->row_group_offset = row_group_offset; }
+
+  void addMemorySize(int64_t memory_size) { this->memory_size += memory_size; }
+
+  void resetMemorySize() { this->memory_size = 0; }
+};
+
+struct ChunkState {
+  int count;
+  int64_t offset;
+
+  ChunkState(int count, int64_t offset) : count(count), offset(offset) {}
+
+  void reset() {
+    resetOffset();
+    resetCount();
+  }
+
+  void resetOffset() { this->offset = 0; }
+
+  void addOffset(int64_t offset) { this->offset += offset; }
+
+  void resetCount() { this->count = 0; }
+
+  void addCount(int count) { this->count += count; }
+};
+
 // Default number of rows to read when using ::arrow::RecordBatchReader
-static constexpr size_t DefaultBatchSize = 1024;
-static constexpr size_t DefaultBufferSize = 16 * 1024 * 1024;
+static constexpr int64_t DefaultBatchSize = 1024;
+static constexpr int64_t DefaultBufferSize = 16 * 1024 * 1024;
 
 class PackedRecordBatchReader : public arrow::RecordBatchReader {
   public:
@@ -43,7 +81,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
                           std::shared_ptr<arrow::Schema> schema,
                           std::vector<ColumnOffset>& column_offsets,
                           std::vector<int>& needed_columns,
-                          size_t buffer_size = DefaultBufferSize);
+                          int64_t buffer_size = DefaultBufferSize);
 
   std::shared_ptr<arrow::Schema> schema() const override;
 
@@ -68,17 +106,12 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   std::vector<ColumnOffset> needed_column_offsets_;
   std::vector<int> needed_columns_;
 
-  // Internal table states
   std::vector<std::shared_ptr<arrow::Table>> tables_;
-  size_t limit_;
-  std::vector<size_t> row_offsets_;
-  std::vector<int> row_group_offsets_;
-  std::vector<size_t> table_memory_sizes_;
+  std::vector<TableState> table_states_;
+  int64_t limit_;
 
-  // Internal chunking states
-  std::vector<int> chunk_numbers_;
-  std::vector<size_t> chunk_offsets_;
-  size_t absolute_row_position_;
+  std::vector<ChunkState> chunk_states_;
+  int64_t absolute_row_position_;
 };
 
 }  // namespace milvus_storage
