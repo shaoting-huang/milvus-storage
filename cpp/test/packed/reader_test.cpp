@@ -62,11 +62,28 @@ class PackedRecordBatchReaderTest : public ::testing::Test {
   std::unique_ptr<arrow::fs::FileSystem> fs_;
 };
 
+TEST_F(PackedRecordBatchReaderTest, OffsetMinHeapTest) {
+  ColumnOffsetMinHeap minHeap;
+
+  minHeap.emplace(1, 30);
+  minHeap.emplace(2, 20);
+  minHeap.emplace(3, 40);
+  minHeap.emplace(4, 10);
+
+  EXPECT_EQ(minHeap.top().row_offset, 10);
+  minHeap.pop();
+  EXPECT_EQ(minHeap.top().row_offset, 20);
+  minHeap.pop();
+  EXPECT_EQ(minHeap.top().row_offset, 30);
+  minHeap.pop();
+  EXPECT_EQ(minHeap.top().row_offset, 40);
+}
+
 TEST_F(PackedRecordBatchReaderTest, ReadTest) {
   auto paths = std::vector{std::string("/tmp/f1"), std::string("/tmp/f2")};
   auto schema = CreateArrowSchema({"pk_field", "json_field"}, {arrow::int64(), arrow::utf8()});
-  auto column_offsets = std::vector{ColumnOffset(0, 0), ColumnOffset(1, 0)};
-  auto needed_columns = std::vector{0, 1};
+  auto column_offsets = std::vector{std::pair<int, int>(0, 0), std::pair<int, int>(1, 0)};
+  auto needed_columns = std::set{0, 1};
   PackedRecordBatchReader pr(*fs_, paths, schema, column_offsets, needed_columns);
 
   ASSERT_AND_ARROW_ASSIGN(auto table, pr.ToTable());

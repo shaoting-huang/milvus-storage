@@ -19,6 +19,7 @@
 #include <arrow/record_batch.h>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 #include <queue>
@@ -26,14 +27,14 @@
 namespace milvus_storage {
 
 struct ColumnOffset {
-  int file_index;
-  int column_index;
+  int path_index;
+  int row_offset;
 
-  ColumnOffset(int file_index, int column_index) : file_index(file_index), column_index(column_index) {}
+  ColumnOffset(int path_index, int row_offset) : path_index(path_index), row_offset(row_offset) {}
 };
 
 struct ColumnOffsetComparator {
-  bool operator()(const ColumnOffset& a, const ColumnOffset& b) const { return a.column_index < b.column_index; }
+  bool operator()(const ColumnOffset& a, const ColumnOffset& b) const { return a.row_offset > b.row_offset; }
 };
 
 using ColumnOffsetMinHeap = std::priority_queue<ColumnOffset, std::vector<ColumnOffset>, ColumnOffsetComparator>;
@@ -84,8 +85,8 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   PackedRecordBatchReader(arrow::fs::FileSystem& fs,
                           const std::vector<std::string>& paths,
                           const std::shared_ptr<arrow::Schema> schema,
-                          const std::vector<ColumnOffset>& column_offsets,
-                          const std::vector<int>& needed_columns,
+                          const std::vector<std::pair<int, int>>& column_offsets,
+                          const std::set<int>& needed_columns,
                           const int64_t buffer_size = DefaultBufferSize);
 
   std::shared_ptr<arrow::Schema> schema() const override;
@@ -95,19 +96,19 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   private:
   // Advance buffer to fill the expected buffer size
   arrow::Status advanceBuffer();
+  std::vector<const arrow::Array*> collectChunks(int64_t chunksize) const;
 
   private:
   const std::shared_ptr<arrow::Schema> schema_;
 
   size_t buffer_available_;
   std::vector<std::unique_ptr<parquet::arrow::FileReader>> file_readers_;
-  std::vector<ColumnOffset> needed_column_offsets_;
   std::vector<std::shared_ptr<arrow::Table>> tables_;
   std::vector<TableState> table_states_;
-  int64_t limit_;
+  int64_t row_offset_limit_;
   std::vector<ChunkState> chunk_states_;
   int64_t absolute_row_position_;
-  ColumnOffsetMinHeap sorted_offsets_;
+  std::vector<std::pair<int, int>> needed_column_offsets_;
 };
 
 }  // namespace milvus_storage
