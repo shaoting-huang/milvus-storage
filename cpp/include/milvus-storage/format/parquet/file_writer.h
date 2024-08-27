@@ -51,6 +51,8 @@ class ParquetFileWriter : public FileWriter {
   Status Close() override;
 
   private:
+  Status CommitCurrentPart();
+
   arrow::fs::FileSystem& fs_;
   std::shared_ptr<arrow::Schema> schema_;
   const std::string file_path_;
