@@ -69,6 +69,18 @@
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
+
+#define MILVUS_IGNORE_EXPR(expr) ((void)(expr))
+
+#define DCHECK(condition) MILVUS_IGNORE_EXPR(condition)
+#define DCHECK_OK(status) MILVUS_IGNORE_EXPR(status)
+#define DCHECK_EQ(val1, val2) MILVUS_IGNORE_EXPR(val1)
+#define DCHECK_NE(val1, val2) MILVUS_IGNORE_EXPR(val1)
+#define DCHECK_LE(val1, val2) MILVUS_IGNORE_EXPR(val1)
+#define DCHECK_LT(val1, val2) MILVUS_IGNORE_EXPR(val1)
+#define DCHECK_GE(val1, val2) MILVUS_IGNORE_EXPR(val1)
+#define DCHECK_GT(val1, val2) MILVUS_IGNORE_EXPR(val1)
+
 std::string LogOut(const char* pattern, ...);
 
 void SetThreadName(const std::string_view name);

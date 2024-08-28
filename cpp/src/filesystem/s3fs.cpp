@@ -19,6 +19,22 @@
 #include <filesystem/s3_internal.h>
 #include "arrow/util/future.h"
 
+#include <aws/core/Aws.h>
+#include <aws/core/Region.h>
+#include <aws/core/VersionConfig.h>
+#include <aws/core/auth/AWSCredentials.h>
+#include <aws/core/auth/AWSCredentialsProviderChain.h>
+#include <aws/core/auth/STSCredentialsProvider.h>
+#include <aws/core/client/DefaultRetryStrategy.h>
+#include <aws/core/client/RetryStrategy.h>
+#include <aws/core/http/HttpResponse.h>
+#include <aws/core/utils/Outcome.h>
+#include <aws/core/utils/logging/ConsoleLogSystem.h>
+#include <aws/core/utils/stream/PreallocatedStreamBuf.h>
+#include <aws/core/utils/xml/XmlSerializer.h>
+#include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/S3Errors.h>
 #include <aws/s3/model/AbortMultipartUploadRequest.h>
 #include <aws/s3/model/CompleteMultipartUploadRequest.h>
 #include <aws/s3/model/CompletedMultipartUpload.h>
@@ -36,15 +52,17 @@
 #include <aws/s3/model/ListObjectsV2Request.h>
 #include <aws/s3/model/ObjectCannedACL.h>
 #include <aws/s3/model/PutObjectRequest.h>
+#include <aws/s3/model/PutObjectResult.h>
 #include <aws/s3/model/UploadPartRequest.h>
+
+#include "filesystem/s3_client.h"
+#include "common/log.h"
 
 static const char kSep = '/';
 
 static constexpr int64_t kMinimumPartUpload = 5 * 1024 * 1024;
 
 using namespace arrow::fs;
-
-
 
 namespace milvus_storage {
 
@@ -176,7 +194,7 @@ struct ObjectMetadataSetter {
 
 
 template <typename ObjectRequest>
-Status SetObjectMetadata(const std::shared_ptr<const KeyValueMetadata>& metadata,
+Status SetObjectMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata,
                          ObjectRequest* req) {
   static auto setters = ObjectMetadataSetter<ObjectRequest>::GetSetters();
 
@@ -193,7 +211,17 @@ Status SetObjectMetadata(const std::shared_ptr<const KeyValueMetadata>& metadata
   return Status::OK();
 }
 
-
+// A non-copying iostream.
+// See https://stackoverflow.com/questions/35322033/aws-c-sdk-uploadpart-times-out
+// https://stackoverflow.com/questions/13059091/creating-an-input-stream-from-constant-memory
+class StringViewStream : Aws::Utils::Stream::PreallocatedStreamBuf, public std::iostream {
+ public:
+  StringViewStream(const void* data, int64_t nbytes)
+      : Aws::Utils::Stream::PreallocatedStreamBuf(
+            reinterpret_cast<unsigned char*>(const_cast<void*>(data)),
+            static_cast<size_t>(nbytes)),
+        std::iostream(this) {}
+};
 
 // An OutputStream that writes to a S3 object
 class ObjectOutputStream final : public io::OutputStream {
@@ -201,7 +229,7 @@ class ObjectOutputStream final : public io::OutputStream {
   struct UploadState;
 
  public:
-  ObjectOutputStream(std::shared_ptr<Aws::S3::S3Client> client, const io::IOContext& io_context,
+  ObjectOutputStream(std::shared_ptr<S3Client> client, const io::IOContext& io_context,
                      const S3Path& path, const S3Options& options,
                      const std::shared_ptr<const KeyValueMetadata>& metadata)
       : client_(std::move(client)),
@@ -504,7 +532,7 @@ class ObjectOutputStream final : public io::OutputStream {
   }
 
  protected:
-  std::shared_ptr<Aws::S3::S3Client> client_;
+  std::shared_ptr<S3Client> client_;
   const io::IOContext io_context_;
   const S3Path path_;
   const std::shared_ptr<const KeyValueMetadata> metadata_;

@@ -16,14 +16,10 @@
 #include "arrow/filesystem/s3fs.h"
 #include <memory>
 #include <string>
-#include <vector>
 #include "arrow/result.h"
 #include "arrow/type_fwd.h"
 #include <aws/core/utils/StringUtils.h>
 
-#include "arrow/filesystem/filesystem.h"
-#include "arrow/util/macros.h"
-#include "arrow/util/uri.h"
 
 using namespace arrow;
 
@@ -33,7 +29,7 @@ class MilvusS3FileSystem : public fs::S3FileSystem {
   Result<std::shared_ptr<io::OutputStream>> OpenOutputStream(
       const std::string& path,
       const std::shared_ptr<const KeyValueMetadata>& metadata) override;
-}
+};
 
 
 }  // namespace milvus_storage
