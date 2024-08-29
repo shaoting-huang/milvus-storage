@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20.0)
 
+include(cmake/Utils.cmake)
 project(milvus-storage VERSION 0.1.0)
 
 option(WITH_UT "Build the testing tree." ON)
@@ -20,6 +21,8 @@ find_package(Arrow REQUIRED)
 find_package(protobuf REQUIRED)
 find_package(glog REQUIRED)
 find_package(AWSSDK REQUIRED)
+
+add_subdirectory(src)
 
 file(GLOB_RECURSE SRC_FILES src/*.cpp src/*.cc)
 add_library(milvus-storage ${SRC_FILES})
