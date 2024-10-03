@@ -193,6 +193,12 @@ struct S3Options {
   static Result<S3Options> FromUri(const std::string& uri, std::string* out_path = NULLPTR);
 };
 
+// struct S3Options : public arrow::fs::S3Options {
+//   int64_t part_upload_size = 10 * 1024 * 1024;  // 10MB
+
+//   bool allow_delayed_open = false;
+// };
+
 class MultiPartUploadS3FS : public arrow::fs::S3FileSystem {
   public:
   explicit MultiPartUploadS3FS(const arrow::fs::S3Options& options, int64_t part_size)
@@ -201,8 +207,8 @@ class MultiPartUploadS3FS : public arrow::fs::S3FileSystem {
   arrow::Result<std::shared_ptr<arrow::io::OutputStream>> OpenOutputStream(
       const std::string& s, const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) override;
 
-  static Result<std::shared_ptr<S3FileSystem>> Make(const S3Options& options,
-                                                    const io::IOContext& = io::default_io_context()) override;
+  static arrow::Result<std::shared_ptr<arrow::fs::S3FileSystem>> Make(
+      const arrow::fs::S3Options& options, const arrow::io::IOContext& = arrow::io::default_io_context()) override;
 
   protected:
   class Impl;
@@ -217,7 +223,8 @@ class MultiPartUploadS3FSProducer : public FileSystemProducer {
   public:
   MultiPartUploadS3FSProducer() {};
 
-  Result<std::shared_ptr<arrow::fs::FileSystem>> Make(const std::string& uri, std::string* out_path) override {
+  milvus_storage::Result<std::shared_ptr<arrow::fs::FileSystem>> Make(const std::string& uri,
+                                                                      std::string* out_path) override {
     arrow::util::Uri uri_parser;
     RETURN_ARROW_NOT_OK(uri_parser.Parse(uri));
 
@@ -242,7 +249,7 @@ class MultiPartUploadS3FSProducer : public FileSystemProducer {
     // TODO: move all env variables into config interface
     int64_t part_size = std::stoll(std::getenv("PART_SIZE")) * 1024 * 1024;
 
-    ASSIGN_OR_RETURN_ARROW_NOT_OK(auto fs, MultiPartUploadS3FS::Make(options, part_size));
+    ASSIGN_OR_RETURN_ARROW_NOT_OK(auto fs, MultiPartUploadS3FS::Make(options));
     return std::shared_ptr<arrow::fs::FileSystem>(fs);
   }
 };
