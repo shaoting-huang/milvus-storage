@@ -19,10 +19,6 @@
 #include "boost/filesystem/path.hpp"
 #include <boost/filesystem/operations.hpp>
 
-#ifdef MILVUS_AZURE_FS
-#include "milvus-storage/filesystem/azure/azure_fs.h"
-#endif
-
 #ifdef MILVUS_OPENDAL
 #endif
 
@@ -46,12 +42,6 @@ Result<ArrowFileSystemPtr> ArrowFileSystemSingleton::createArrowFileSystem(const
     case StorageType::Remote: {
       auto cloud_provider = CloudProviderType_Map[config.cloud_provider];
       switch (cloud_provider) {
-#ifdef MILVUS_AZURE_FS
-        case CloudProviderType::AZURE: {
-          auto producer = std::make_shared<AzureFileSystemProducer>(config);
-          return producer->Make();
-        }
-#endif
         case CloudProviderType::AWS:
         case CloudProviderType::GCP:
         case CloudProviderType::ALIYUN:

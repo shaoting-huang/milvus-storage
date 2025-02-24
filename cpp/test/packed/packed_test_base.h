@@ -90,10 +90,6 @@ class PackedTestBase : public ::testing::Test {
         conf.useIAM = true;
         conf.access_key_id = "";
         conf.access_key_value = "";
-        // azure should provide access key
-        if (conf.cloud_provider == "azure") {
-          conf.access_key_id = std::string(access_key);
-        }
       }
     }
 
