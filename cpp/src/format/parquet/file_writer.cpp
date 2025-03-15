@@ -22,6 +22,7 @@
 #include "milvus-storage/filesystem/s3/multi_part_upload_s3_fs.h"
 #include "boost/filesystem/path.hpp"
 #include <boost/filesystem/operations.hpp>
+#include <iostream>
 
 namespace milvus_storage {
 
@@ -46,6 +47,7 @@ Status ParquetFileWriter::Init() {
   auto s3fs = std::dynamic_pointer_cast<MultiPartUploadS3FS>(fs_);
   std::shared_ptr<arrow::io::OutputStream> sink;
   if (storage_config_.part_size > 0 && s3fs) {
+    std::cout << "cast to s3 fs" << std::endl;
     // azure does not support custom part upload size output stream
     ASSIGN_OR_RETURN_ARROW_NOT_OK(sink, s3fs->OpenOutputStreamWithUploadSize(file_path_, storage_config_.part_size));
   } else {
