@@ -33,6 +33,7 @@ Result<ArrowFileSystemPtr> ArrowFileSystemSingleton::createArrowFileSystem(const
   auto storage_type = StorageType_Map[config.storage_type];
   switch (storage_type) {
     case StorageType::Local: {
+      std::cout << "!!! Local file system" << std::endl;
       arrow::util::Uri uri_parser;
       auto uri = "file://" + config.root_path;
       RETURN_ARROW_NOT_OK(uri_parser.Parse(uri));

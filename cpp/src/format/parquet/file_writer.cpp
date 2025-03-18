@@ -46,11 +46,14 @@ Status ParquetFileWriter::Init() {
   }
   auto s3fs = std::dynamic_pointer_cast<MultiPartUploadS3FS>(fs_);
   std::shared_ptr<arrow::io::OutputStream> sink;
+  std::cout << "!!!storage config part size: " << storage_config_.part_size << std::endl;
+  std::cout << "!!!file path: " << file_path_ << std::endl;
   if (storage_config_.part_size > 0 && s3fs) {
-    std::cout << "cast to s3 fs" << std::endl;
+    std::cout << "!!!cast to s3 fs" << std::endl;
     // azure does not support custom part upload size output stream
     ASSIGN_OR_RETURN_ARROW_NOT_OK(sink, s3fs->OpenOutputStreamWithUploadSize(file_path_, storage_config_.part_size));
   } else {
+    std::cout << "!!!cast to local fs" << std::endl;
     ASSIGN_OR_RETURN_ARROW_NOT_OK(sink, fs_->OpenOutputStream(file_path_));
   }
 
