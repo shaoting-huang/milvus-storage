@@ -701,7 +701,7 @@ class ClientBuilder {
 
     if (io_context) {
       // TODO: Once ARROW-15035 is done we can get rid of the "at least 25" fallback
-      client_config_.maxConnections = std::max(io_context->executor()->GetCapacity(), 25);
+      client_config_.maxConnections = std::max(io_context->executor()->GetCapacity(), 100);
     }
 
     const bool use_virtual_addressing = options_.endpoint_override.empty() || options_.force_virtual_addressing;
@@ -801,7 +801,29 @@ class ObjectInputFile final : public io::RandomAccessFile {
     req.SetKey(ToAwsString(path_.key));
 
     ARROW_ASSIGN_OR_RAISE(auto client_lock, holder_->Lock());
+    // 在调用 HeadObject 之前添加日志
+    ARROW_LOG(DEBUG) << "Attempting to call HeadObject with bucket: " << path_.bucket 
+                     << ", key: " << path_.key;
+
+    // 检查 client_lock 是否有效
+    if (!client_lock.get()) {
+        ARROW_LOG(ERROR) << "Invalid client_lock when calling HeadObject";
+        return Status::Invalid("Invalid S3 client");
+    }
+
+    // 检查 req 参数
+    ARROW_LOG(DEBUG) << "HeadObject request parameters:"
+                     << "\n  Bucket: " << req.GetBucket()
+                     << "\n  Key: " << req.GetKey();
+
     auto outcome = client_lock.Move()->HeadObject(req);
+
+    // 记录结果
+    if (!outcome.IsSuccess()) {
+        ARROW_LOG(ERROR) << "HeadObject failed with error: " 
+                         << outcome.GetError().GetMessage();
+    }
+
     if (!outcome.IsSuccess()) {
       if (IsNotFound(outcome.GetError())) {
         return PathNotFound(path_);
@@ -1895,7 +1917,29 @@ class MultiPartUploadS3FS::Impl : public std::enable_shared_from_this<MultiPartU
       req.SetKey(ToAwsString(key));
 
       ARROW_ASSIGN_OR_RAISE(auto client_lock, self->holder_->Lock());
+      // 在调用 HeadObject 之前添加日志
+      ARROW_LOG(DEBUG) << "Attempting to call HeadObject with bucket: " << bucket 
+                       << ", key: " << key;
+
+      // 检查 client_lock 是否有效
+      if (!client_lock.get()) {
+          ARROW_LOG(ERROR) << "Invalid client_lock when calling HeadObject";
+          return Status::Invalid("Invalid S3 client");
+      }
+
+      // 检查 req 参数
+      ARROW_LOG(DEBUG) << "HeadObject request parameters:"
+                       << "\n  Bucket: " << req.GetBucket()
+                       << "\n  Key: " << req.GetKey();
+
       auto outcome = client_lock.Move()->HeadObject(req);
+
+      // 记录结果
+      if (!outcome.IsSuccess()) {
+          ARROW_LOG(ERROR) << "HeadObject failed with error: " 
+                           << outcome.GetError().GetMessage();
+      }
+
       if (outcome.IsSuccess()) {
         return IsDirectory(key, outcome.GetResult());
       }

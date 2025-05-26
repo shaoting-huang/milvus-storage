@@ -46,7 +46,7 @@ void S3FileSystemProducer::InitS3() {
   if (config_.use_custom_part_upload) {
     if (!IsS3Initialized()) {
       S3GlobalOptions global_options;
-      global_options.log_level = LogLevel_Map[config_.log_level];
+      global_options.log_level = arrow::fs::S3LogLevel::Debug;
 
       if (config_.cloud_provider == "gcp" && config_.useIAM) {
         Aws::HttpOptions http_options;
