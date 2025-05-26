@@ -802,7 +802,7 @@ class ObjectInputFile final : public io::RandomAccessFile {
 
     ARROW_ASSIGN_OR_RAISE(auto client_lock, holder_->Lock());
     // 在调用 HeadObject 之前添加日志
-    ARROW_LOG(DEBUG) << "Attempting to call HeadObject with bucket: " << path_.bucket 
+    ARROW_LOG(INFO) << "Attempting to call HeadObject with bucket: " << path_.bucket 
                      << ", key: " << path_.key;
 
     // 检查 client_lock 是否有效
@@ -812,7 +812,7 @@ class ObjectInputFile final : public io::RandomAccessFile {
     }
 
     // 检查 req 参数
-    ARROW_LOG(DEBUG) << "HeadObject request parameters:"
+    ARROW_LOG(INFO) << "HeadObject request parameters:"
                      << "\n  Bucket: " << req.GetBucket()
                      << "\n  Key: " << req.GetKey();
 
@@ -1918,7 +1918,7 @@ class MultiPartUploadS3FS::Impl : public std::enable_shared_from_this<MultiPartU
 
       ARROW_ASSIGN_OR_RAISE(auto client_lock, self->holder_->Lock());
       // 在调用 HeadObject 之前添加日志
-      ARROW_LOG(DEBUG) << "Attempting to call HeadObject with bucket: " << bucket 
+      ARROW_LOG(INFO) << "Attempting to call HeadObject with bucket: " << bucket 
                        << ", key: " << key;
 
       // 检查 client_lock 是否有效
@@ -1928,7 +1928,7 @@ class MultiPartUploadS3FS::Impl : public std::enable_shared_from_this<MultiPartU
       }
 
       // 检查 req 参数
-      ARROW_LOG(DEBUG) << "HeadObject request parameters:"
+      ARROW_LOG(INFO) << "HeadObject request parameters:"
                        << "\n  Bucket: " << req.GetBucket()
                        << "\n  Key: " << req.GetKey();
 
