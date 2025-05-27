@@ -799,6 +799,7 @@ class ObjectInputFile final : public io::RandomAccessFile {
       : holder_(std::move(holder)), io_context_(io_context), path_(path), content_length_(size) {}
 
   Status Init() {
+    ARROW_LOG(INFO) << "Init ObjectInputFile";
     // Issue a HEAD Object to get the content-length and ensure any
     // errors (e.g. file not found) don't wait until the first Read() call.
     if (content_length_ != kNoSize) {
@@ -811,6 +812,7 @@ class ObjectInputFile final : public io::RandomAccessFile {
     req.SetKey(ToAwsString(path_.key));
 
     ARROW_ASSIGN_OR_RAISE(auto client_lock, holder_->Lock());
+    ARROW_LOG(INFO) << "HeadObject request " << path_.key << " in bucket " << path_.bucket;
     auto outcome = client_lock.Move()->HeadObject(req);
     if (!outcome.IsSuccess()) {
       if (IsNotFound(outcome.GetError())) {
