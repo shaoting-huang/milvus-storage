@@ -121,39 +121,4 @@ struct S3GlobalOptions {
   static S3GlobalOptions Defaults();
 };
 
-/// \brief Initialize the S3 APIs with the specified set of options.
-///
-/// It is required to call this function at least once before using S3FileSystem.
-///
-/// Once this function is called you MUST call FinalizeS3 before the end of the
-/// application in order to avoid a segmentation fault at shutdown.
-arrow::Status InitializeS3(const S3GlobalOptions& options);
-
-/// \brief Ensure the S3 APIs are initialized, but only if not already done.
-///
-/// If necessary, this will call InitializeS3() with some default options.
-arrow::Status EnsureS3Initialized();
-
-/// Whether S3 was initialized, and not finalized.
-bool IsS3Initialized();
-
-/// Whether S3 was finalized.
-bool IsS3Finalized();
-
-/// \brief Shutdown the S3 APIs.
-///
-/// This can wait for some S3 concurrent calls to finish so as to avoid
-/// race conditions.
-/// After this function has been called, all S3 calls will fail with an error.
-///
-/// Calls to InitializeS3() and FinalizeS3() should be serialized by the
-/// application (this also applies to EnsureS3Initialized() and
-/// EnsureS3Finalized()).
-arrow::Status FinalizeS3();
-
-/// \brief Ensure the S3 APIs are shutdown, but only if not already done.
-///
-/// If necessary, this will call FinalizeS3().
-arrow::Status EnsureS3Finalized();
-
 }  // namespace milvus_storage
