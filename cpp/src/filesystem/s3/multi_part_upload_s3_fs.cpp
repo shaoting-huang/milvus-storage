@@ -814,6 +814,7 @@ class ObjectInputFile final : public io::RandomAccessFile {
     ARROW_ASSIGN_OR_RAISE(auto client_lock, holder_->Lock());
     ARROW_LOG(INFO) << "HeadObject request " << path_.key << " in bucket " << path_.bucket;
     auto outcome = client_lock.Move()->HeadObject(req);
+    ARROW_LOG(INFO) << "HeadObject response " << outcome.GetResult().GetContentLength();
     if (!outcome.IsSuccess()) {
       if (IsNotFound(outcome.GetError())) {
         return PathNotFound(path_);
