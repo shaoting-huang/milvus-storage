@@ -2660,7 +2660,7 @@ struct AwsInstance {
 #ifdef ARROW_S3_HAS_S3CLIENT_CONFIGURATION
       EndpointProviderCache::Instance()->Reset();
 #endif
-      Aws::ShutdownAPI(aws_options_);
+      // Aws::ShutdownAPI(aws_options_);
     }
   }
 
