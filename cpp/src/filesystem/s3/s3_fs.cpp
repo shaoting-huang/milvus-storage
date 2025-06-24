@@ -43,6 +43,8 @@
 namespace milvus_storage {
 
 void S3FileSystemProducer::InitS3() {
+  static bool exit_handler_registered = false;
+  
   if (!arrow::fs::IsS3Initialized()) {
     arrow::fs::S3GlobalOptions arrow_global_options;
     arrow_global_options.log_level = LogLevel_Map[config_.log_level];
@@ -50,12 +52,6 @@ void S3FileSystemProducer::InitS3() {
     if (!status.ok()) {
       throw std::invalid_argument("Arrow S3 initialization failed");
     }
-    std::atexit([]() {
-      auto status = arrow::fs::EnsureS3Finalized();
-      if (!status.ok()) {
-        throw std::invalid_argument("ArrowFileSystem failed to finalize arrow S3");
-      }
-    });
   }
   if (!IsS3Initialized()) {
     ExtendS3GlobalOptions global_options;
@@ -75,14 +71,28 @@ void S3FileSystemProducer::InitS3() {
     if (!status.ok()) {
       throw std::invalid_argument("ArrowFileSystem failed to initialize S3");
     }
+  }
 
-    // Register cleanup on exit
+  // Register a single exit handler that handles both Arrow S3 and custom S3 finalization
+  // to avoid double-finalization of the AWS SDK
+  if (!exit_handler_registered) {
     std::atexit([]() {
-      auto status = EnsureS3Finalized();
-      if (!status.ok()) {
-        throw std::invalid_argument("ArrowFileSystem failed to finalize S3");
+      // Finalize Arrow S3 if it was initialized
+      if (arrow::fs::IsS3Initialized()) {
+        auto status = arrow::fs::EnsureS3Finalized();
+        if (!status.ok()) {
+          throw std::invalid_argument("ArrowFileSystem failed to finalize arrow S3");
+        }
+      }
+      // Finalize custom S3 if it was initialized and not already finalized
+      if (IsS3Initialized() && !IsS3Finalized()) {
+        auto status = EnsureS3Finalized();
+        if (!status.ok()) {
+          throw std::invalid_argument("ArrowFileSystem failed to finalize S3");
+        }
       }
     });
+    exit_handler_registered = true;
   }
 }
 
