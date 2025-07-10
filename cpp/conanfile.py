@@ -27,6 +27,7 @@ class StorageConan(ConanFile):
         "with_profiler": [True, False],
         "with_ut": [True, False],
         "with_jemalloc": [True, False],
+        "with_azure": [True, False],
     }
     default_options = {
         "shared": True,
@@ -34,12 +35,12 @@ class StorageConan(ConanFile):
         "with_asan": False,
         "with_profiler": False,
         "with_ut": True,
+        "with_azure": True,
         "with_jemalloc": True,
         "aws-sdk-cpp:config": True,
         "aws-sdk-cpp:text-to-speech": False,
         "aws-sdk-cpp:transfer": False,
         "arrow:with_s3": True,
-        "arrow:with_azure": False,
         "arrow:filesystem_layer": True,
         "arrow:dataset_modules": True,
         "arrow:parquet": True,
@@ -100,6 +101,8 @@ class StorageConan(ConanFile):
             # Macos M1 cannot use jemalloc and arrow azure fs
             self.options["arrow"].with_azure = False
             self.options["arrow"].with_jemalloc = False
+        if self.options.with_azure:
+            self.requires("azure-sdk-for-cpp/1.11.3")
 
     def validate(self):
         if self.settings.compiler.get_safe("cppstd"):
@@ -149,7 +152,7 @@ class StorageConan(ConanFile):
         tc.variables["WITH_ASAN"] = self.options.with_asan
         tc.variables["WITH_PROFILER"] = self.options.with_profiler
         tc.variables["WITH_UT"] = self.options.with_ut
-        tc.variables["WITH_AZURE_FS"] = False
+        tc.variables["WITH_AZURE_FS"] = self.options.with_azure
         tc.variables["ARROW_WITH_JEMALLOC"] = self.options.with_jemalloc
         tc.generate()
 
