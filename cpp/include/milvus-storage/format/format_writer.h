@@ -27,13 +27,9 @@
 
 #include "milvus-storage/manifest.h"
 #include "milvus-storage/writer.h"
+#include "milvus-storage/format/parquet/file_writer.h"
 
-// Forward declarations
-namespace milvus_storage {
-class ParquetFileWriter;
-}
-
-namespace milvus_storage::api {
+namespace internal::api {
 
 /**
  * @brief Abstract interface for format-specific writers
@@ -53,7 +49,7 @@ class FormatWriter {
    * @param custom_metadata Custom metadata to include
    * @return Status indicating success or error condition
    */
-  virtual arrow::Status initialize(std::shared_ptr<ColumnGroup> column_group,
+  virtual arrow::Status initialize(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                    const std::map<std::string, std::string>& custom_metadata) = 0;
 
   /**
@@ -92,7 +88,7 @@ class FormatWriter {
    *
    * @return WriteStats structure with current statistics
    */
-  virtual Writer::WriteStats get_stats() const = 0;
+  virtual milvus_storage::api::Writer::WriteStats get_stats() const = 0;
 };
 
 /**
@@ -113,11 +109,11 @@ class FormatWriterFactory {
    * @param properties Write properties
    * @return Unique pointer to the created format writer
    */
-  static std::unique_ptr<FormatWriter> create_writer(FileFormat format,
+  static std::unique_ptr<FormatWriter> create_writer(milvus_storage::api::FileFormat format,
                                                      std::shared_ptr<arrow::fs::FileSystem> fs,
-                                                     std::shared_ptr<ColumnGroup> column_group,
+                                                     std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                                      std::shared_ptr<arrow::Schema> schema,
-                                                     const WriteProperties& properties);
+                                                     const milvus_storage::api::WriteProperties& properties);
 
   private:
   FormatWriterFactory() = default;
@@ -132,13 +128,13 @@ class FormatWriterFactory {
 class ParquetFormatWriter : public FormatWriter {
   public:
   ParquetFormatWriter(std::shared_ptr<arrow::fs::FileSystem> fs,
-                      std::shared_ptr<ColumnGroup> column_group,
+                      std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                       std::shared_ptr<arrow::Schema> schema,
-                      const WriteProperties& properties);
+                      const milvus_storage::api::WriteProperties& properties);
 
   ~ParquetFormatWriter() override;
 
-  arrow::Status initialize(std::shared_ptr<ColumnGroup> column_group,
+  arrow::Status initialize(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                            const std::map<std::string, std::string>& custom_metadata) override;
 
   arrow::Status write(const std::shared_ptr<arrow::RecordBatch>& batch) override;
@@ -149,17 +145,17 @@ class ParquetFormatWriter : public FormatWriter {
 
   arrow::Status add_metadata(const std::string& key, const std::string& value) override;
 
-  Writer::WriteStats get_stats() const override;
+  milvus_storage::api::Writer::WriteStats get_stats() const override;
 
   private:
   std::shared_ptr<arrow::fs::FileSystem> fs_;
-  std::shared_ptr<ColumnGroup> column_group_;
+  std::shared_ptr<milvus_storage::api::ColumnGroup> column_group_;
   std::shared_ptr<arrow::Schema> schema_;
-  WriteProperties properties_;
+  milvus_storage::api::WriteProperties properties_;
 
   std::unique_ptr<milvus_storage::ParquetFileWriter> file_writer_;
   std::map<std::string, std::string> custom_metadata_;
-  Writer::WriteStats stats_;
+  milvus_storage::api::Writer::WriteStats stats_;
   bool initialized_;
   bool finished_;
 
@@ -173,4 +169,4 @@ class ParquetFormatWriter : public FormatWriter {
   int64_t flushed_rows_;
 };
 
-}  // namespace milvus_storage::api
+}  // namespace internal::api

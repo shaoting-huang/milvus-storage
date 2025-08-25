@@ -306,8 +306,8 @@ arrow::Status Writer::initialize_column_group_writers(const std::shared_ptr<arro
       auto column_group_schema = arrow::schema(fields);
 
       // Use FormatWriterFactory to create writer based on format
-      auto writer =
-          FormatWriterFactory::create_writer(column_group->format, fs_, column_group, column_group_schema, properties_);
+      auto writer = internal::api::FormatWriterFactory::create_writer(column_group->format, fs_, column_group,
+                                                                      column_group_schema, properties_);
 
       // Initialize the writer
       ARROW_RETURN_NOT_OK(writer->initialize(column_group, custom_metadata_));

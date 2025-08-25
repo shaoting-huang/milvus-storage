@@ -14,18 +14,12 @@
 
 #pragma once
 #include <memory>
-#include <vector>
-#include <set>
 #include "parquet/arrow/reader.h"
 #include "arrow/filesystem/filesystem.h"
 #include "milvus-storage/common/result.h"
 #include "milvus-storage/storage/options.h"
 
 namespace milvus_storage {
-
-namespace api {
-struct ColumnGroup;
-}
 
 Result<std::unique_ptr<parquet::arrow::FileReader>> MakeArrowFileReader(arrow::fs::FileSystem& fs,
                                                                         const std::string& file_path);
@@ -43,8 +37,5 @@ size_t GetRecordBatchMemorySize(const std::shared_ptr<arrow::RecordBatch>& recor
 size_t GetArrowArrayMemorySize(const std::shared_ptr<arrow::Array>& array);
 
 size_t GetTableMemorySize(const std::shared_ptr<arrow::Table>& table);
-
-std::shared_ptr<arrow::Schema> CreateFilteredSchemaFromColumnGroups(
-    std::shared_ptr<arrow::Schema> schema, const std::vector<std::shared_ptr<api::ColumnGroup>>& column_groups);
 
 }  // namespace milvus_storage

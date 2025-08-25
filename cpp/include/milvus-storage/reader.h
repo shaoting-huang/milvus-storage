@@ -17,35 +17,20 @@
 #include <arrow/filesystem/filesystem.h>
 #include <arrow/record_batch.h>
 #include <arrow/type.h>
-#include <queue>
 #include <memory>
+#include <cstdint>
 
 #include "milvus-storage/manifest.h"
-#include "milvus-storage/packed/column_group.h"
-#include "milvus-storage/packed/chunk_manager.h"
-#include <queue>
-
-namespace milvus_storage {
-class PackedFileMetadata;
-}
-
-namespace milvus_storage::api {
-class FormatReader;
-}
+#include "milvus-storage/common/row_offset_heap.h"
 
 namespace milvus_storage::api {
 
-/**
- * @brief Row offset comparator for min heap - finds column group with minimum row offset
- */
-struct RowOffsetComparator {
-  bool operator()(const std::pair<int64_t, int64_t>& a, const std::pair<int64_t, int64_t>& b) const {
-    return a.second > b.second;  // Min heap: smallest row offset first
-  }
-};
+// Forward declarations
+class PackedRecordBatchReader;
+class ParquetChunkReader;
+class ChunkReaderFactory;
 
-using RowOffsetMinHeap =
-    std::priority_queue<std::pair<int64_t, int64_t>, std::vector<std::pair<int64_t, int64_t>>, RowOffsetComparator>;
+using RowOffsetMinHeap = milvus_storage::RowOffsetMinHeap;
 
 /**
  * @brief Configuration properties for read operations
@@ -65,9 +50,6 @@ struct ReadProperties {
   /// Additional metadata required for encryption/decryption context
   std::string cipher_metadata;
 
-  /// Memory buffer size for reading operations (default: 64MB)
-  int64_t buffer_size = 64 * 1024 * 1024;
-
   // TODO: Add key retriever interface for dynamic key management
   // KeyRetriever cipher_key_retriever;
 };
@@ -79,10 +61,9 @@ struct ReadProperties {
  * This is suitable for reading from unencrypted storage systems.
  */
 const ReadProperties default_read_properties = {
-    .cipher_type = "",                ///< No encryption by default
-    .cipher_key = "",                 ///< Empty key indicates no encryption
-    .cipher_metadata = "",            ///< No encryption metadata needed
-    .buffer_size = 64 * 1024 * 1024,  ///< 64MB default buffer size
+    .cipher_type = "",      ///< No encryption by default
+    .cipher_key = "",       ///< Empty key indicates no encryption
+    .cipher_metadata = "",  ///< No encryption metadata needed
 };
 
 /**
@@ -208,7 +189,8 @@ class ChunkReader {
    * @param row_indices Vector of global row indices to map to chunk indices
    * @return Result containing vector of chunk indices, or error status
    */
-  [[nodiscard]] arrow::Result<std::vector<int64_t>> get_chunk_indices(const std::vector<int64_t>& row_indices) const;
+  [[nodiscard]] virtual arrow::Result<std::vector<int64_t>> get_chunk_indices(
+      const std::vector<int64_t>& row_indices) const;
 
   /**
    * @brief Retrieves a single chunk by its index from the column group
@@ -219,7 +201,7 @@ class ChunkReader {
    * @param chunk_index Zero-based index of the chunk to retrieve
    * @return Result containing the record batch for the specified chunk, or error status
    */
-  [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> get_chunk(int64_t chunk_index) const;
+  [[nodiscard]] virtual arrow::Result<std::shared_ptr<arrow::RecordBatch>> get_chunk(int64_t chunk_index) const = 0;
 
   /**
    * @brief Retrieves multiple chunks by their indices with optional parallel processing
@@ -231,14 +213,26 @@ class ChunkReader {
    * @param parallelism Number of threads to use for parallel reading (default: 1, sequential)
    * @return Result containing vector of record batches for the specified chunks, or error status
    */
-  [[nodiscard]] arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> get_chunks(
+  [[nodiscard]] virtual arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> get_chunks(
       const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const;
 
-  private:
+  /**
+   * @brief Gets the memory size of a specific chunk
+   *
+   * This method returns the memory size of a chunk by consulting the cached metadata
+   * in the format reader, allowing for accurate memory planning without estimation.
+   *
+   * @param chunk_index Zero-based index of the chunk
+   * @return Result containing the chunk size in bytes, or error status
+   */
+  [[nodiscard]] virtual arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const;
+
+  protected:
   std::shared_ptr<arrow::fs::FileSystem> fs_;  ///< Filesystem interface for data access
   std::shared_ptr<ColumnGroup> column_group_;  ///< Column group metadata and configuration
   std::vector<std::string> needed_columns_;    ///< Subset of columns to read (empty = all columns)
 
+  private:
   /**
    * @brief Validates that the chunk index is within valid range
    *
@@ -246,52 +240,6 @@ class ChunkReader {
    * @return Status indicating whether the index is valid
    */
   [[nodiscard]] arrow::Status validate_chunk_index(int64_t chunk_index) const;
-};
-
-/**
- * @brief Record batch reader that handles row alignment across multiple column groups
- * Uses packed reader patterns for optimal memory management and I/O
- */
-class RowAlignedRecordBatchReader : public arrow::RecordBatchReader {
-  public:
-  RowAlignedRecordBatchReader(const std::map<int64_t, std::unique_ptr<FormatReader>>& column_group_readers,
-                              std::shared_ptr<arrow::Schema> schema,
-                              const std::vector<std::string>& needed_columns,
-                              int64_t buffer_size);
-
-  std::shared_ptr<arrow::Schema> schema() const override;
-  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override;
-  arrow::Status Close() override;
-
-  private:
-  // Core schema and configuration
-  std::shared_ptr<arrow::Schema> schema_;
-  std::vector<std::string> needed_columns_;
-
-  // Column group batch readers for row alignment
-  std::map<int64_t, std::shared_ptr<arrow::RecordBatchReader>> column_group_batch_readers_;
-
-  // Memory management with min heap for optimal I/O (packed reader patterns)
-  mutable int64_t memory_used_;
-  mutable int64_t memory_limit_;
-  mutable int64_t row_limit_;
-  mutable int64_t absolute_row_position_;
-  mutable int64_t read_count_;
-
-  // Column group states for tracking and alignment
-  mutable std::vector<milvus_storage::ColumnGroupState> column_group_states_;
-  mutable std::vector<std::queue<std::shared_ptr<arrow::Table>>> tables_;
-  mutable std::unique_ptr<milvus_storage::ChunkManager> chunk_manager_;
-
-  // State management
-  bool closed_;
-  mutable bool initialized_;
-
-  // Internal methods for packed reader-style management
-  arrow::Status initialize() const;
-  arrow::Status advanceBuffer() const;
-  int64_t getNextRowGroupSize(int64_t column_group_index) const;
-  arrow::Status readRowGroupsForColumnGroup(int64_t column_group_index, const std::vector<int>& row_groups) const;
 };
 
 /**
@@ -413,48 +361,106 @@ class Reader {
   std::shared_ptr<arrow::Schema> schema_;      ///< Logical Arrow schema defining data structure
   ReadProperties properties_;                  ///< Configuration properties including encryption
   std::vector<std::string> needed_columns_;    ///< Subset of columns to read (empty = all columns)
-
-  mutable std::map<int64_t, std::unique_ptr<FormatReader>>
-      column_group_readers_;  ///< Individual readers per column group
   mutable std::vector<std::shared_ptr<ColumnGroup>>
       needed_column_groups_;  ///< Column groups required for needed columns (cached)
-  mutable bool initialized_;  ///< Whether the readers have been initialized
-
-  // Memory management and row alignment components from packed implementation
-  mutable int64_t memory_used_;                                                ///< Current memory usage
-  mutable int64_t memory_limit_;                                               ///< Memory limit for buffering
-  mutable int64_t row_limit_;                                                  ///< Current row limit for reading
-  mutable int64_t absolute_row_position_;                                      ///< Absolute row position in dataset
-  mutable std::vector<milvus_storage::ColumnGroupState> column_group_states_;  ///< State tracking for column groups
-  mutable std::unique_ptr<milvus_storage::ChunkManager> chunk_manager_;        ///< Chunk alignment manager
-  mutable std::vector<std::queue<std::shared_ptr<arrow::Table>>> tables_;      ///< Table buffers for each column group
 
   /**
    * @brief Initializes the needed column groups based on requested columns
    */
   void initialize_needed_column_groups() const;
-
-  /**
-   * @brief Initialize format readers based on column groups
-   */
-  arrow::Status initialize_format_readers() const;
-
-  /**
-   * @brief Memory management and row alignment methods from packed implementation
-   */
-  arrow::Status advanceBuffer() const;
-  arrow::Status initializePackedReaderComponents() const;
-
-  /**
-   * @brief Take aligned rows from multiple column groups
-   */
-  arrow::Result<std::shared_ptr<arrow::RecordBatch>> take_aligned_rows(const std::vector<int64_t>& row_indices,
-                                                                       int64_t parallelism) const;
-
-  /**
-   * @brief Combine batches from different column groups maintaining schema order
-   */
-  arrow::Result<std::shared_ptr<arrow::RecordBatch>> combine_column_group_batches(
-      const std::map<int64_t, std::shared_ptr<arrow::RecordBatch>>& column_group_results, int64_t expected_rows) const;
 };
+
+/**
+ * @brief Packed RecordBatchReader for coordinated reading across multiple column groups
+ *
+ * This class provides efficient streaming access to data stored across multiple column groups,
+ * with proper memory management, row alignment, and I/O optimization based on the packed reader algorithm.
+ */
+class PackedRecordBatchReader : public arrow::RecordBatchReader {
+  public:
+  /**
+   * @brief Constructor
+   *
+   * @param fs Filesystem interface
+   * @param column_groups Vector of column groups to read from
+   * @param schema Target schema for the output
+   * @param needed_columns Columns to read (empty = all columns)
+   * @param properties Read properties including encryption settings
+   * @param buffer_size Maximum memory buffer size
+   */
+  explicit PackedRecordBatchReader(std::shared_ptr<arrow::fs::FileSystem> fs,
+                                   const std::vector<std::shared_ptr<ColumnGroup>>& column_groups,
+                                   std::shared_ptr<arrow::Schema> schema,
+                                   const std::vector<std::string>& needed_columns,
+                                   const ReadProperties& properties,
+                                   int64_t buffer_size = 32 * 1024 * 1024);
+
+  /**
+   * @brief Destructor - explicitly clean up resources
+   */
+  ~PackedRecordBatchReader() override;
+
+  /**
+   * @brief Get the schema of the output data
+   */
+  std::shared_ptr<arrow::Schema> schema() const override;
+
+  /**
+   * @brief Read the next batch of data
+   *
+   * @param batch Output parameter to receive the next record batch
+   */
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override;
+
+  /**
+   * @brief Close the reader and clean up resources
+   */
+  arrow::Status Close() override;
+
+  private:
+  // Column group state tracking - similar to packed reader's ColumnGroupState
+  struct ColumnGroupState {
+    int64_t current_chunk = -1;  // Current chunk index being read (-1 means no chunk loaded yet)
+    int64_t row_offset = 0;      // Current row offset in this column group
+    int64_t memory_usage = 0;    // Current memory usage by this column group
+    bool exhausted = false;      // Whether this column group has no more data
+
+    ColumnGroupState() = default;
+  };
+
+  std::shared_ptr<arrow::fs::FileSystem> fs_;
+  std::vector<std::shared_ptr<ColumnGroup>> column_groups_;
+  std::shared_ptr<arrow::Schema> output_schema_;
+  std::vector<std::string> needed_columns_;
+  ReadProperties properties_;
+  int64_t memory_limit_;  // Maximum memory to use (similar to packed reader)
+
+  // Runtime state - adapted from packed reader
+  std::vector<ColumnGroupState> cg_states_;
+  std::vector<std::unique_ptr<ChunkReader>> chunk_readers_;
+  std::vector<std::queue<std::shared_ptr<arrow::RecordBatch>>> batch_queues_;
+  int64_t memory_used_;                                           // Current memory usage
+  int64_t absolute_row_position_;                                 // Current absolute row position (like packed reader)
+  int64_t row_limit_;                                             // Row limit for alignment
+  bool finished_;                                                 // Whether reading is finished
+  size_t current_batch_index_;                                    // Current batch index for buffered reading
+  std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches_;  // Simplified storage for all batches
+
+  /**
+   * @brief Initialize format readers for all column groups
+   */
+  arrow::Status initialize();
+
+  /**
+   * @brief Advance the buffer by reading more data from column groups (similar to packed reader)
+   */
+  arrow::Status advanceBuffer();
+
+  /**
+   * @brief Combine batches from different column groups into a single batch
+   */
+  arrow::Result<std::shared_ptr<arrow::RecordBatch>> combine_batches(
+      const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches);
+};
+
 }  // namespace milvus_storage::api

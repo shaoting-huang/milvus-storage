@@ -22,26 +22,26 @@
 #include "milvus-storage/common/arrow_util.h"
 #include "milvus-storage/format/parquet/file_writer.h"
 
-namespace milvus_storage::api {
+namespace internal::api {
 
 // ==================== Helper Functions ====================
 
 /**
  * @brief Converts API compression type to parquet compression type
  */
-static parquet::Compression::type convert_compression_type(CompressionType compression) {
+static parquet::Compression::type convert_compression_type(milvus_storage::api::CompressionType compression) {
   switch (compression) {
-    case CompressionType::UNCOMPRESSED:
+    case milvus_storage::api::CompressionType::UNCOMPRESSED:
       return parquet::Compression::UNCOMPRESSED;
-    case CompressionType::SNAPPY:
+    case milvus_storage::api::CompressionType::SNAPPY:
       return parquet::Compression::SNAPPY;
-    case CompressionType::GZIP:
+    case milvus_storage::api::CompressionType::GZIP:
       return parquet::Compression::GZIP;
-    case CompressionType::LZ4:
+    case milvus_storage::api::CompressionType::LZ4:
       return parquet::Compression::LZ4;
-    case CompressionType::ZSTD:
+    case milvus_storage::api::CompressionType::ZSTD:
       return parquet::Compression::ZSTD;
-    case CompressionType::BROTLI:
+    case milvus_storage::api::CompressionType::BROTLI:
       return parquet::Compression::BROTLI;
     default:
       return parquet::Compression::ZSTD;
@@ -51,7 +51,8 @@ static parquet::Compression::type convert_compression_type(CompressionType compr
 /**
  * @brief Converts WriteProperties to parquet::WriterProperties
  */
-static std::shared_ptr<parquet::WriterProperties> convert_write_properties(const WriteProperties& properties) {
+static std::shared_ptr<parquet::WriterProperties> convert_write_properties(
+    const milvus_storage::api::WriteProperties& properties) {
   parquet::WriterProperties::Builder builder;
 
   // Set compression
@@ -74,9 +75,9 @@ static std::shared_ptr<parquet::WriterProperties> convert_write_properties(const
 // ==================== ParquetFormatWriter Implementation ====================
 
 ParquetFormatWriter::ParquetFormatWriter(std::shared_ptr<arrow::fs::FileSystem> fs,
-                                         std::shared_ptr<ColumnGroup> column_group,
+                                         std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                          std::shared_ptr<arrow::Schema> schema,
-                                         const WriteProperties& properties)
+                                         const milvus_storage::api::WriteProperties& properties)
     : fs_(std::move(fs)),
       column_group_(std::move(column_group)),
       schema_(std::move(schema)),
@@ -90,7 +91,7 @@ ParquetFormatWriter::ParquetFormatWriter(std::shared_ptr<arrow::fs::FileSystem> 
 
 ParquetFormatWriter::~ParquetFormatWriter() = default;
 
-arrow::Status ParquetFormatWriter::initialize(std::shared_ptr<ColumnGroup> column_group,
+arrow::Status ParquetFormatWriter::initialize(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                               const std::map<std::string, std::string>& custom_metadata) {
   if (initialized_) {
     return arrow::Status::Invalid("ParquetFormatWriter already initialized");
@@ -157,7 +158,7 @@ arrow::Status ParquetFormatWriter::write(const std::shared_ptr<arrow::RecordBatc
 
   // Buffer the batch in memory (similar to column_group_.AddRecordBatch)
   buffered_batches_.push_back(batch);
-  size_t batch_memory = GetRecordBatchMemorySize(batch);
+  size_t batch_memory = milvus_storage::GetRecordBatchMemorySize(batch);
   buffered_memory_usage_.push_back(batch_memory);
 
   // Update statistics
@@ -253,6 +254,6 @@ arrow::Status ParquetFormatWriter::add_metadata(const std::string& key, const st
   return arrow::Status::OK();
 }
 
-Writer::WriteStats ParquetFormatWriter::get_stats() const { return stats_; }
+milvus_storage::api::Writer::WriteStats ParquetFormatWriter::get_stats() const { return stats_; }
 
-}  // namespace milvus_storage::api
+}  // namespace internal::api

@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "milvus-storage/format/format_reader.h"
 #include "milvus-storage/format/format_writer.h"
+#include "milvus-storage/format/format_reader.h"
 
-namespace milvus_storage::api {
+namespace internal::api {
 
 // ==================== FormatWriterFactory Implementation ====================
 
-std::unique_ptr<FormatWriter> FormatWriterFactory::create_writer(FileFormat format,
-                                                                 std::shared_ptr<arrow::fs::FileSystem> fs,
-                                                                 std::shared_ptr<ColumnGroup> column_group,
-                                                                 std::shared_ptr<arrow::Schema> schema,
-                                                                 const WriteProperties& properties) {
+std::unique_ptr<FormatWriter> FormatWriterFactory::create_writer(
+    milvus_storage::api::FileFormat format,
+    std::shared_ptr<arrow::fs::FileSystem> fs,
+    std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+    std::shared_ptr<arrow::Schema> schema,
+    const milvus_storage::api::WriteProperties& properties) {
   switch (format) {
-    case FileFormat::PARQUET:
+    case milvus_storage::api::FileFormat::PARQUET:
       return std::make_unique<ParquetFormatWriter>(std::move(fs), std::move(column_group), std::move(schema),
                                                    properties);
 
@@ -35,17 +36,18 @@ std::unique_ptr<FormatWriter> FormatWriterFactory::create_writer(FileFormat form
   }
 }
 
-// ==================== FormatReaderFactory Implementation ====================
+// ==================== ChunkReaderFactory Implementation ====================
 
-std::unique_ptr<FormatReader> FormatReaderFactory::create_reader(FileFormat format,
-                                                                 std::shared_ptr<arrow::fs::FileSystem> fs,
-                                                                 std::shared_ptr<ColumnGroup> column_group,
-                                                                 std::shared_ptr<arrow::Schema> schema,
-                                                                 const ReadProperties& properties) {
+std::unique_ptr<milvus_storage::api::ChunkReader> ChunkReaderFactory::create_reader(
+    milvus_storage::api::FileFormat format,
+    std::shared_ptr<arrow::fs::FileSystem> fs,
+    std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+    std::vector<std::string> needed_columns,
+    const milvus_storage::api::ReadProperties& properties) {
   switch (format) {
-    case FileFormat::PARQUET:
-      return std::make_unique<ParquetFormatReader>(std::move(fs), std::move(column_group), std::move(schema),
-                                                   properties);
+    case milvus_storage::api::FileFormat::PARQUET:
+      return std::make_unique<milvus_storage::api::ParquetFormatReader>(std::move(fs), std::move(column_group),
+                                                                        std::move(needed_columns), properties);
 
     default:
       throw std::runtime_error("Unsupported file format: " + std::to_string(static_cast<int>(format)) +
@@ -53,4 +55,4 @@ std::unique_ptr<FormatReader> FormatReaderFactory::create_reader(FileFormat form
   }
 }
 
-}  // namespace milvus_storage::api
+}  // namespace internal::api

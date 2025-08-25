@@ -28,9 +28,12 @@
 #include "milvus-storage/manifest.h"
 
 namespace milvus_storage {
-class PackedRecordBatchWriter;
 class ColumnGroup;
 }  // namespace milvus_storage
+
+namespace internal::api {
+class FormatWriter;
+}
 
 namespace milvus_storage::api {
 class FormatWriter;
@@ -496,10 +499,11 @@ class Writer {
   std::unique_ptr<ColumnGroupPolicy> column_group_policy_;  ///< Policy for organizing columns
   WriteProperties properties_;                              ///< Write configuration properties
 
-  std::shared_ptr<Manifest> manifest_;                                     ///< Dataset manifest being built
-  std::vector<std::shared_ptr<ColumnGroup>> column_groups_;                ///< Column groups metadata
-  std::map<int64_t, std::unique_ptr<FormatWriter>> column_group_writers_;  ///< Individual writers per column group
-  std::map<std::string, std::string> custom_metadata_;                     ///< Custom metadata for the manifest
+  std::shared_ptr<Manifest> manifest_;                       ///< Dataset manifest being built
+  std::vector<std::shared_ptr<ColumnGroup>> column_groups_;  ///< Column groups metadata
+  std::map<int64_t, std::unique_ptr<internal::api::FormatWriter>>
+      column_group_writers_;                            ///< Individual writers per column group
+  std::map<std::string, std::string> custom_metadata_;  ///< Custom metadata for the manifest
 
   WriteStats stats_;  ///< Current write statistics
   bool closed_;       ///< Whether the writer has been closed
