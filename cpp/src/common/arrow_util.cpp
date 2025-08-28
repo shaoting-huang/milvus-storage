@@ -15,13 +15,11 @@
 #include "milvus-storage/common/arrow_util.h"
 #include "milvus-storage/common/macro.h"
 #include "milvus-storage/common/utils.h"
-#include "milvus-storage/manifest.h"
 #include <arrow/record_batch.h>
 #include <arrow/array.h>
 #include <arrow/type.h>
 #include <arrow/table.h>
 #include <arrow/util/key_value_metadata.h>
-#include <set>
 #include <cstdint>
 
 namespace milvus_storage {

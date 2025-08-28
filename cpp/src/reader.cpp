@@ -41,79 +41,6 @@ namespace milvus_storage::api {
 
 // ==================== ChunkReader Implementation ====================
 
-arrow::Status ChunkReader::validate_chunk_index(int64_t chunk_index) const {
-  if (chunk_index < 0) {
-    return arrow::Status::Invalid("Chunk index cannot be negative: " + std::to_string(chunk_index));
-  }
-
-  if (column_group_->stats.num_chunks > 0 && chunk_index >= column_group_->stats.num_chunks) {
-    return arrow::Status::Invalid("Chunk index " + std::to_string(chunk_index) + " is out of range. Column group has " +
-                                  std::to_string(column_group_->stats.num_chunks) + " chunks");
-  }
-
-  return arrow::Status::OK();
-}
-
-arrow::Result<std::vector<int64_t>> ChunkReader::get_chunk_indices(const std::vector<int64_t>& row_indices) const {
-  if (row_indices.empty()) {
-    return arrow::Status::Invalid("Row indices vector cannot be empty");
-  }
-
-  // Validate row indices are non-negative
-  for (const auto& row_index : row_indices) {
-    if (row_index < 0) {
-      return arrow::Status::Invalid("Row index cannot be negative: " + std::to_string(row_index));
-    }
-  }
-
-  // Get total rows in this column group to validate row indices
-  int64_t total_rows = column_group_->stats.num_rows;
-  if (total_rows <= 0) {
-    return arrow::Status::Invalid("Column group has no rows or invalid row count: " + std::to_string(total_rows));
-  }
-
-  // Validate all row indices are within bounds
-  for (const auto& row_index : row_indices) {
-    if (row_index >= total_rows) {
-      return arrow::Status::Invalid("Row index " + std::to_string(row_index) + " is out of range. Column group has " +
-                                    std::to_string(total_rows) + " rows");
-    }
-  }
-
-  // Calculate chunk indices based on row distribution
-  // Assumes uniform distribution of rows across chunks
-  int64_t num_chunks = column_group_->stats.num_chunks;
-  if (num_chunks <= 0) {
-    return arrow::Status::Invalid("Column group has no chunks or invalid chunk count: " + std::to_string(num_chunks));
-  }
-
-  int64_t rows_per_chunk = total_rows / num_chunks;
-  int64_t remaining_rows = total_rows % num_chunks;
-
-  std::vector<int64_t> chunk_indices;
-  chunk_indices.reserve(row_indices.size());
-
-  for (const auto& row_index : row_indices) {
-    int64_t chunk_index;
-
-    // Handle the case where the last few chunks might have an extra row
-    if (remaining_rows > 0 && row_index >= (num_chunks - remaining_rows) * rows_per_chunk) {
-      // This row is in one of the larger chunks at the end
-      int64_t adjusted_row = row_index - (num_chunks - remaining_rows) * rows_per_chunk;
-      chunk_index = (num_chunks - remaining_rows) + adjusted_row / (rows_per_chunk + 1);
-    } else {
-      // This row is in a regular-sized chunk
-      chunk_index = row_index / rows_per_chunk;
-    }
-
-    // Ensure chunk index is within bounds
-    chunk_index = std::min(chunk_index, num_chunks - 1);
-    chunk_indices.push_back(chunk_index);
-  }
-
-  return chunk_indices;
-}
-
 // Base class implementation of get_chunks using the pure virtual get_chunk method
 arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> ChunkReader::get_chunks(
     const std::vector<int64_t>& chunk_indices, int64_t parallelism) const {
@@ -158,22 +85,6 @@ arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> ChunkReader::get
   }
 
   return result_batches;
-}
-
-arrow::Result<int64_t> ChunkReader::get_chunk_size(int64_t chunk_index) const {
-  ARROW_RETURN_NOT_OK(validate_chunk_index(chunk_index));
-
-  // Create a chunk reader using the factory to access metadata
-  auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group_->format, fs_, column_group_,
-                                                                       needed_columns_, ReadProperties{});
-
-  if (!chunk_reader) {
-    return arrow::Status::Invalid("Failed to create chunk reader for column group " +
-                                  std::to_string(column_group_->id));
-  }
-
-  // Get chunk size from the format reader's cached metadata
-  return chunk_reader->get_chunk_size(chunk_index);
 }
 
 // ==================== Reader Implementation ====================
@@ -250,7 +161,7 @@ arrow::Result<std::shared_ptr<ChunkReader>> Reader::get_chunk_reader(int64_t col
 
   try {
     // Use factory to create concrete chunk reader implementation
-    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group,
+    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group->path,
                                                                          needed_columns_, properties_);
     if (!chunk_reader) {
       return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -341,8 +252,8 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
         }
       }
 
-      auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group,
-                                                                           cg_needed_columns, properties_);
+      auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
+          column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
 
       if (!chunk_reader) {
         return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -392,7 +303,7 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
             }
 
             auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
-                column_group->format, fs_, column_group, cg_needed_columns, properties_);
+                column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
 
             if (!chunk_reader) {
               return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -500,7 +411,7 @@ PackedRecordBatchReader::~PackedRecordBatchReader() {
   // Clear all_batches_ first to release Arrow objects before other cleanup
   all_batches_.clear();
   all_batches_.shrink_to_fit();
-  
+
   // Ensure proper cleanup - ignore the return status in destructor
   (void)Close();
 }
@@ -521,7 +432,7 @@ arrow::Status PackedRecordBatchReader::initialize() {
     }
 
     // Create chunk reader using factory
-    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group,
+    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group->path,
                                                                          cg_needed_columns, properties_);
 
     if (!chunk_reader) {
@@ -676,12 +587,12 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
       }
 
       if (!cg_needed_columns.empty()) {
-        auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group,
-                                                                             cg_needed_columns, properties_);
+        auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
+            column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
 
         if (chunk_reader) {
           // Try to determine chunk count carefully
-          auto parquet_reader = dynamic_cast<ParquetFormatReader*>(chunk_reader.get());
+          auto parquet_reader = dynamic_cast<milvus_storage::api::ParquetFormatReader*>(chunk_reader.get());
           if (parquet_reader) {
             auto num_chunks_result = parquet_reader->get_num_chunks();
             if (num_chunks_result.ok()) {
@@ -713,8 +624,8 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
         }
 
         if (!cg_needed_columns.empty()) {
-          auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group,
-                                                                               cg_needed_columns, properties_);
+          auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
+              column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
 
           if (chunk_reader) {
             auto chunk_result = chunk_reader->get_chunk(chunk_idx);
@@ -845,7 +756,7 @@ arrow::Status PackedRecordBatchReader::Close() {
   if (finished_) {
     return arrow::Status::OK();
   }
-  
+
   // Clean up resources
   for (auto& queue : batch_queues_) {
     while (!queue.empty()) {

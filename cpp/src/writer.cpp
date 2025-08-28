@@ -234,7 +234,7 @@ arrow::Result<std::shared_ptr<Manifest>> Writer::close() {
     ARROW_RETURN_NOT_OK(writer->close());
   }
 
-  // Update final accumulated statistics
+  // Update ColumnGroup statistics from format writers and accumulate final statistics
   stats_ = {};
   for (const auto& [column_group_id, writer] : column_group_writers_) {
     auto writer_stats = writer->get_stats();
@@ -242,6 +242,18 @@ arrow::Result<std::shared_ptr<Manifest>> Writer::close() {
     stats_.batches_written = writer_stats.batches_written;
     stats_.bytes_written += writer_stats.bytes_written;
     stats_.column_groups_count += writer_stats.column_groups_count;
+
+    // Update the corresponding ColumnGroup's statistics
+    auto column_groups = manifest_->get_column_groups();
+    for (auto& column_group : column_groups) {
+      if (column_group->id == column_group_id) {
+        column_group->stats.num_rows = writer_stats.rows_written;
+        column_group->stats.num_chunks = 1;  // Each column group is typically one chunk in our format
+        column_group->stats.compressed_size = writer_stats.bytes_written;
+        column_group->stats.uncompressed_size = writer_stats.bytes_written;  // Approximation
+        break;
+      }
+    }
   }
 
   closed_ = true;
@@ -306,11 +318,11 @@ arrow::Status Writer::initialize_column_group_writers(const std::shared_ptr<arro
       auto column_group_schema = arrow::schema(fields);
 
       // Use FormatWriterFactory to create writer based on format
-      auto writer = internal::api::FormatWriterFactory::create_writer(column_group->format, fs_, column_group,
+      auto writer = internal::api::FormatWriterFactory::create_writer(column_group->format, fs_, column_group->path,
                                                                       column_group_schema, properties_);
 
       // Initialize the writer
-      ARROW_RETURN_NOT_OK(writer->initialize(column_group, custom_metadata_));
+      ARROW_RETURN_NOT_OK(writer->initialize(column_group->path, custom_metadata_));
 
       // Custom metadata is already added during initialization
 

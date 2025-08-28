@@ -75,11 +75,11 @@ static std::shared_ptr<parquet::WriterProperties> convert_write_properties(
 // ==================== ParquetFormatWriter Implementation ====================
 
 ParquetFormatWriter::ParquetFormatWriter(std::shared_ptr<arrow::fs::FileSystem> fs,
-                                         std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+                                         const std::string& file_path,
                                          std::shared_ptr<arrow::Schema> schema,
                                          const milvus_storage::api::WriteProperties& properties)
     : fs_(std::move(fs)),
-      column_group_(std::move(column_group)),
+      file_path_(file_path),
       schema_(std::move(schema)),
       properties_(properties),
       stats_{},
@@ -91,17 +91,20 @@ ParquetFormatWriter::ParquetFormatWriter(std::shared_ptr<arrow::fs::FileSystem> 
 
 ParquetFormatWriter::~ParquetFormatWriter() = default;
 
-arrow::Status ParquetFormatWriter::initialize(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+arrow::Status ParquetFormatWriter::initialize(const std::string& file_path,
                                               const std::map<std::string, std::string>& custom_metadata) {
   if (initialized_) {
     return arrow::Status::Invalid("ParquetFormatWriter already initialized");
   }
 
-  column_group_ = column_group;
+  // Update file_path_ if a different one is provided
+  if (!file_path.empty()) {
+    file_path_ = file_path;
+  }
   custom_metadata_ = custom_metadata;
 
-  if (!column_group_) {
-    return arrow::Status::Invalid("No column group provided");
+  if (file_path_.empty()) {
+    return arrow::Status::Invalid("No file path provided");
   }
 
   // Convert WriteProperties to parquet writer properties
@@ -123,8 +126,8 @@ arrow::Status ParquetFormatWriter::initialize(std::shared_ptr<milvus_storage::ap
   milvus_storage::StorageConfig storage_config;
 
   // Create ParquetFileWriter using the same approach as packed ColumnGroupWriter
-  file_writer_ = std::make_unique<milvus_storage::ParquetFileWriter>(schema_, fs_, column_group->path, storage_config,
-                                                                     writer_props);
+  file_writer_ =
+      std::make_unique<milvus_storage::ParquetFileWriter>(schema_, fs_, file_path_, storage_config, writer_props);
 
   // Initialize the file writer
   auto status = file_writer_->Init();
@@ -226,18 +229,11 @@ arrow::Status ParquetFormatWriter::close() {
     }
   }
 
-  // Update column group statistics
-  if (column_group_) {
-    // Get file size from filesystem
-    auto file_info_result = fs_->GetFileInfo(column_group_->path);
-    if (file_info_result.ok() && file_info_result.ValueOrDie().size() >= 0) {
-      column_group_->stats.compressed_size = file_info_result.ValueOrDie().size();
-      column_group_->stats.uncompressed_size = file_info_result.ValueOrDie().size();
-      stats_.bytes_written += file_info_result.ValueOrDie().size();
-    }
-
-    column_group_->stats.num_rows = stats_.rows_written;
-    column_group_->stats.num_chunks = 1;
+  // Update internal statistics (no longer updating ColumnGroup stats)
+  // Get file size from filesystem for internal stats
+  auto file_info_result = fs_->GetFileInfo(file_path_);
+  if (file_info_result.ok() && file_info_result.ValueOrDie().size() >= 0) {
+    stats_.bytes_written += file_info_result.ValueOrDie().size();
   }
 
   return arrow::Status::OK();

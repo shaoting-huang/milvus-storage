@@ -20,7 +20,6 @@
 #include "milvus-storage/storage/options.h"
 
 namespace milvus_storage {
-
 Result<std::unique_ptr<parquet::arrow::FileReader>> MakeArrowFileReader(arrow::fs::FileSystem& fs,
                                                                         const std::string& file_path);
 

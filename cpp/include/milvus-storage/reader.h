@@ -158,27 +158,27 @@ class ReadPropertiesBuilder {
 class ChunkReader {
   public:
   /**
-   * @brief Constructs a ChunkReader for a specific column group
+   * @brief Constructs a ChunkReader for file-based chunk reading
    *
    * @param fs Shared pointer to the filesystem interface for data access
-   * @param column_group Shared pointer to the column group metadata and configuration
+   * @param file_path Path to the data file
    * @param needed_columns Subset of columns to read (empty = all columns)
    *
-   * @throws std::invalid_argument if fs or column_group is null
+   * @throws std::invalid_argument if fs is null or file_path is empty
    */
   explicit ChunkReader(std::shared_ptr<arrow::fs::FileSystem> fs,
-                       std::shared_ptr<ColumnGroup> column_group,
+                       std::string file_path,
                        std::vector<std::string> needed_columns)
-      : fs_(std::move(fs)), column_group_(std::move(column_group)), needed_columns_(std::move(needed_columns)) {
-    if (!fs_ || !column_group_) {
-      throw std::invalid_argument("FileSystem and ColumnGroup cannot be null");
+      : fs_(std::move(fs)), file_path_(std::move(file_path)), needed_columns_(std::move(needed_columns)) {
+    if (!fs_ || file_path_.empty()) {
+      throw std::invalid_argument("FileSystem cannot be null and file_path cannot be empty");
     }
   }
 
   /**
    * @brief Destructor
    */
-  ~ChunkReader() = default;
+  virtual ~ChunkReader() = default;
 
   /**
    * @brief Maps row indices to their corresponding chunk indices within the column group
@@ -190,7 +190,7 @@ class ChunkReader {
    * @return Result containing vector of chunk indices, or error status
    */
   [[nodiscard]] virtual arrow::Result<std::vector<int64_t>> get_chunk_indices(
-      const std::vector<int64_t>& row_indices) const;
+      const std::vector<int64_t>& row_indices) const = 0;
 
   /**
    * @brief Retrieves a single chunk by its index from the column group
@@ -225,21 +225,23 @@ class ChunkReader {
    * @param chunk_index Zero-based index of the chunk
    * @return Result containing the chunk size in bytes, or error status
    */
-  [[nodiscard]] virtual arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const;
+  [[nodiscard]] virtual arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const = 0;
 
   protected:
   std::shared_ptr<arrow::fs::FileSystem> fs_;  ///< Filesystem interface for data access
-  std::shared_ptr<ColumnGroup> column_group_;  ///< Column group metadata and configuration
+  std::string file_path_;                      ///< Path to the data file
   std::vector<std::string> needed_columns_;    ///< Subset of columns to read (empty = all columns)
 
-  private:
+  protected:
   /**
    * @brief Validates that the chunk index is within valid range
+   *
+   * Each implementation should override this method to provide format-specific validation.
    *
    * @param chunk_index Index to validate
    * @return Status indicating whether the index is valid
    */
-  [[nodiscard]] arrow::Status validate_chunk_index(int64_t chunk_index) const;
+  [[nodiscard]] virtual arrow::Status validate_chunk_index(int64_t chunk_index) const = 0;
 };
 
 /**
@@ -371,7 +373,7 @@ class Reader {
 };
 
 /**
- * @brief Packed RecordBatchReader for coordinated reading across multiple column groups
+ * @brief PackedRecordBatchReader for coordinated reading across multiple column groups
  *
  * This class provides efficient streaming access to data stored across multiple column groups,
  * with proper memory management, row alignment, and I/O optimization based on the packed reader algorithm.

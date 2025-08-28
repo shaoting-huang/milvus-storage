@@ -38,11 +38,11 @@ namespace internal::api {
 class ChunkReaderFactory {
   public:
   /**
-   * @brief Create a chunk reader for a single column group
+   * @brief Create a chunk reader for a file
    *
    * @param format The file format to create a reader for
    * @param fs Filesystem interface
-   * @param column_group The column group this reader will handle
+   * @param file_path Path to the data file
    * @param needed_columns Vector of column names to read (empty = all columns)
    * @param properties Read properties
    * @return Unique pointer to the created chunk reader
@@ -50,7 +50,7 @@ class ChunkReaderFactory {
   static std::unique_ptr<milvus_storage::api::ChunkReader> create_reader(
       milvus_storage::api::FileFormat format,
       std::shared_ptr<arrow::fs::FileSystem> fs,
-      std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+      const std::string& file_path,
       std::vector<std::string> needed_columns,
       const milvus_storage::api::ReadProperties& properties);
 
@@ -63,25 +63,22 @@ class ChunkReaderFactory {
 namespace milvus_storage::api {
 
 /**
- * @brief Parquet format reader implementation that extends ChunkReader
- *
- * This class extends the ChunkReader functionality with Parquet-specific
- * optimizations and direct access to Parquet row groups as chunks.
+ * @brief Parquet format reader implementation
  */
 class ParquetFormatReader : public ChunkReader {
   public:
   ParquetFormatReader(std::shared_ptr<arrow::fs::FileSystem> fs,
-                      std::shared_ptr<ColumnGroup> column_group,
+                      const std::string& file_path,
                       std::vector<std::string> needed_columns,
                       const ReadProperties& properties = default_read_properties);
 
   ~ParquetFormatReader() = default;
 
-  // Override ChunkReader methods for Parquet-specific optimizations
-  [[nodiscard]] arrow::Result<std::vector<int64_t>> get_chunk_indices(const std::vector<int64_t>& row_indices) const;
-  [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> get_chunk(int64_t chunk_index) const;
+  [[nodiscard]] arrow::Result<std::vector<int64_t>> get_chunk_indices(
+      const std::vector<int64_t>& row_indices) const override;
+  [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> get_chunk(int64_t chunk_index) const override;
   [[nodiscard]] arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> get_chunks(
-      const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const;
+      const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const override;
   [[nodiscard]] arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const override;
 
   /**
@@ -89,10 +86,25 @@ class ParquetFormatReader : public ChunkReader {
    */
   [[nodiscard]] arrow::Result<int64_t> get_num_chunks() const;
 
+  protected:
+  /**
+   * @brief Validates that the chunk index is within valid range for this Parquet file
+   *
+   * @param chunk_index Index to validate
+   * @return Status indicating whether the index is valid
+   */
+  [[nodiscard]] arrow::Status validate_chunk_index(int64_t chunk_index) const override;
+
   private:
   ReadProperties properties_;
   mutable std::unique_ptr<parquet::arrow::FileReader> parquet_reader_;
   mutable bool initialized_;
+
+  // Cached metadata for performance optimization
+  mutable std::shared_ptr<parquet::FileMetaData> parquet_metadata_;
+  mutable std::shared_ptr<arrow::Schema> arrow_schema_;
+  mutable std::vector<int64_t> cumulative_rows_;    // Cumulative row counts per row group
+  mutable std::vector<int> needed_column_indices_;  // Column indices for needed columns
 
   /**
    * @brief Initialize the Parquet reader if not already initialized
