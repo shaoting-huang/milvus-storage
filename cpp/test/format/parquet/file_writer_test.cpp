@@ -111,7 +111,7 @@ TEST_F(ParquetFileWriterTest, LargeRecordBatchSplitting) {
   ASSERT_TRUE(writer.Close().ok());
 
   // Read back and verify
-  FileRowGroupReader reader(fs_, temp_file, schema_);
+  FileRowGroupReader reader(fs_, temp_file);
 
   // Get metadata
   auto file_metadata = reader.file_metadata();
@@ -212,7 +212,7 @@ TEST_F(ParquetFileWriterTest, VerySmallBufferSize) {
   ASSERT_TRUE(writer.Close().ok());
 
   // Verify file was created and can be read
-  FileRowGroupReader reader(fs_, temp_file, schema_);
+  FileRowGroupReader reader(fs_, temp_file);
   auto file_metadata = reader.file_metadata();
   ASSERT_GT(file_metadata->GetRowGroupMetadataVector().size(), 0);
 

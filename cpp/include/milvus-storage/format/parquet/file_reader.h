@@ -17,10 +17,11 @@
 #include "milvus-storage/common/metadata.h"
 #include "parquet/arrow/reader.h"
 #include "milvus-storage/common/config.h"
+#include "milvus-storage/reader.h"
 
 namespace milvus_storage {
 
-class FileRowGroupReader {
+class FileRowGroupReader : public milvus_storage::api::ChunkReader {
   public:
   /**
    * @brief FileRowGroupReader reads specified row groups with memory constraints. The schema is the same as the file
@@ -30,26 +31,13 @@ class FileRowGroupReader {
    * @param path Path to the Parquet file.
    * @param buffer_size Memory limit for reading row groups.
    * @param reader_props The reader properties.
+   * @param needed_columns Subset of columns to read (empty = all columns)
    */
   FileRowGroupReader(std::shared_ptr<arrow::fs::FileSystem> fs,
                      const std::string& path,
                      const int64_t buffer_size = DEFAULT_READ_BUFFER_SIZE,
-                     parquet::ReaderProperties reader_props = parquet::default_reader_properties());
-
-  /**
-   * @brief FileRowGroupReader reads specified row groups with memory constraints and schema.
-   *
-   * @param fs The Arrow filesystem interface.
-   * @param path Path to the Parquet file.
-   * @param schema The schema of data to read. If the field is not in the file, it will be filled with nulls.
-   * @param buffer_size Memory limit for reading row groups.
-   * @param reader_props The reader properties.
-   */
-  FileRowGroupReader(std::shared_ptr<arrow::fs::FileSystem> fs,
-                     const std::string& path,
-                     const std::shared_ptr<arrow::Schema> schema,
-                     const int64_t buffer_size = DEFAULT_READ_BUFFER_SIZE,
-                     parquet::ReaderProperties reader_props = parquet::default_reader_properties());
+                     parquet::ReaderProperties reader_props = parquet::default_reader_properties(),
+                     const std::vector<std::string>& needed_columns = {});
 
   Status SetRowGroupOffsetAndCount(int row_group_offset, int row_group_num);
 
@@ -67,6 +55,17 @@ class FileRowGroupReader {
    */
   arrow::Status ReadNextRowGroup(std::shared_ptr<arrow::Table>* out);
 
+  // ChunkReader interface implementations
+  [[nodiscard]] arrow::Result<std::vector<int64_t>> get_chunk_indices(
+      const std::vector<int64_t>& row_indices) const override;
+
+  [[nodiscard]] arrow::Result<std::shared_ptr<arrow::RecordBatch>> get_chunk(int64_t chunk_index) const override;
+
+  [[nodiscard]] arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> get_chunks(
+      const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const override;
+
+  [[nodiscard]] arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const override;
+
   /**
    * @brief Closes the reader and releases resources.
    *
@@ -74,11 +73,13 @@ class FileRowGroupReader {
    */
   arrow::Status Close();
 
+  protected:
+  [[nodiscard]] arrow::Status validate_chunk_index(int64_t chunk_index) const override;
+
   private:
   Status init(std::shared_ptr<arrow::fs::FileSystem> fs,
               const std::string& path,
               const int64_t buffer_size,
-              const std::shared_ptr<arrow::Schema> schema = nullptr,
               parquet::ReaderProperties reader_props = parquet::default_reader_properties());
 
   /**
@@ -97,7 +98,6 @@ class FileRowGroupReader {
   std::vector<int> needed_columns_;
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<parquet::arrow::FileReader> file_reader_;
-  FieldIDList field_id_list_;
   int rg_start_ = -1;
   int rg_end_ = -1;
   int current_rg_ = -1;
