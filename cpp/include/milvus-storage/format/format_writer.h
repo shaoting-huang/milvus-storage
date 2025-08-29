@@ -100,18 +100,16 @@ class FormatWriter {
 class FormatWriterFactory {
   public:
   /**
-   * @brief Create a format writer for a file
+   * @brief Create a format writer for a column group
    *
-   * @param format The file format to create a writer for
+   * @param column_group Column group containing format, path, and metadata
    * @param fs Filesystem interface
-   * @param file_path The file path to write to
    * @param schema Arrow schema for the columns
    * @param properties Write properties
    * @return Unique pointer to the created format writer
    */
-  static std::unique_ptr<FormatWriter> create_writer(milvus_storage::api::FileFormat format,
+  static std::unique_ptr<FormatWriter> create_writer(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                                      std::shared_ptr<arrow::fs::FileSystem> fs,
-                                                     const std::string& file_path,
                                                      std::shared_ptr<arrow::Schema> schema,
                                                      const milvus_storage::api::WriteProperties& properties);
 

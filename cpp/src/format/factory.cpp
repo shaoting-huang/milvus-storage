@@ -20,11 +20,18 @@ namespace internal::api {
 // ==================== FormatWriterFactory Implementation ====================
 
 std::unique_ptr<FormatWriter> FormatWriterFactory::create_writer(
-    milvus_storage::api::FileFormat format,
+    std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
     std::shared_ptr<arrow::fs::FileSystem> fs,
-    const std::string& file_path,
     std::shared_ptr<arrow::Schema> schema,
     const milvus_storage::api::WriteProperties& properties) {
+  if (!column_group) {
+    throw std::runtime_error("Column group cannot be null");
+  }
+
+  // Extract values from column group
+  const auto& format = column_group->format;
+  const auto& file_path = column_group->path;
+
   switch (format) {
     case milvus_storage::api::FileFormat::PARQUET:
       return std::make_unique<ParquetFormatWriter>(std::move(fs), file_path, std::move(schema), properties);
@@ -38,14 +45,27 @@ std::unique_ptr<FormatWriter> FormatWriterFactory::create_writer(
 // ==================== ChunkReaderFactory Implementation ====================
 
 std::unique_ptr<milvus_storage::api::ChunkReader> ChunkReaderFactory::create_reader(
-    milvus_storage::api::FileFormat format,
+    std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
     std::shared_ptr<arrow::fs::FileSystem> fs,
-    const std::string& file_path,
-    std::vector<std::string> needed_columns,
+    const std::vector<std::string>& needed_columns,
     const milvus_storage::api::ReadProperties& properties) {
+  if (!column_group) {
+    throw std::runtime_error("Column group cannot be null");
+  }
+
+  const auto& format = column_group->format;
+  const auto& file_path = column_group->path;
+
+  std::vector<std::string> filtered_columns;
+  for (const auto& col_name : needed_columns) {
+    if (column_group->contains_column(col_name)) {
+      filtered_columns.push_back(col_name);
+    }
+  }
+
   switch (format) {
     case milvus_storage::api::FileFormat::PARQUET:
-      return std::make_unique<milvus_storage::api::ParquetFormatReader>(fs, file_path, std::move(needed_columns),
+      return std::make_unique<milvus_storage::api::ParquetFormatReader>(fs, file_path, std::move(filtered_columns),
                                                                         properties);
 
     default:

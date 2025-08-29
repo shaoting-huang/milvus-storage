@@ -38,20 +38,18 @@ namespace internal::api {
 class ChunkReaderFactory {
   public:
   /**
-   * @brief Create a chunk reader for a file
+   * @brief Create a chunk reader for a column group
    *
-   * @param format The file format to create a reader for
+   * @param column_group Column group containing format, path, and metadata
    * @param fs Filesystem interface
-   * @param file_path Path to the data file
    * @param needed_columns Vector of column names to read (empty = all columns)
    * @param properties Read properties
    * @return Unique pointer to the created chunk reader
    */
   static std::unique_ptr<milvus_storage::api::ChunkReader> create_reader(
-      milvus_storage::api::FileFormat format,
+      std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
       std::shared_ptr<arrow::fs::FileSystem> fs,
-      const std::string& file_path,
-      std::vector<std::string> needed_columns,
+      const std::vector<std::string>& needed_columns,
       const milvus_storage::api::ReadProperties& properties);
 
   private:

@@ -161,8 +161,8 @@ arrow::Result<std::shared_ptr<ChunkReader>> Reader::get_chunk_reader(int64_t col
 
   try {
     // Use factory to create concrete chunk reader implementation
-    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group->path,
-                                                                         needed_columns_, properties_);
+    auto chunk_reader =
+        internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
     if (!chunk_reader) {
       return arrow::Status::Invalid("Failed to create chunk reader for column group " +
                                     std::to_string(column_group_id));
@@ -244,16 +244,8 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
   if (parallelism == 1 || needed_column_groups_.size() == 1) {
     // Sequential execution across column groups
     for (const auto& column_group : needed_column_groups_) {
-      // Get needed columns for this specific column group
-      std::vector<std::string> cg_needed_columns;
-      for (const auto& col_name : needed_columns_) {
-        if (column_group->contains_column(col_name)) {
-          cg_needed_columns.push_back(col_name);
-        }
-      }
-
-      auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
-          column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
+      auto chunk_reader =
+          internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
       if (!chunk_reader) {
         return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -294,16 +286,8 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
       auto future = std::async(
           std::launch::async,
           [this, &column_group, &row_indices, parallelism]() -> arrow::Result<std::shared_ptr<arrow::RecordBatch>> {
-            // Get needed columns for this specific column group
-            std::vector<std::string> cg_needed_columns;
-            for (const auto& col_name : needed_columns_) {
-              if (column_group->contains_column(col_name)) {
-                cg_needed_columns.push_back(col_name);
-              }
-            }
-
-            auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
-                column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
+            auto chunk_reader =
+                internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
             if (!chunk_reader) {
               return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -423,17 +407,9 @@ arrow::Status PackedRecordBatchReader::initialize() {
   for (size_t i = 0; i < column_groups_.size(); ++i) {
     auto& column_group = column_groups_[i];
 
-    // Get needed columns for this specific column group
-    std::vector<std::string> cg_needed_columns;
-    for (const auto& col_name : needed_columns_) {
-      if (column_group->contains_column(col_name)) {
-        cg_needed_columns.push_back(col_name);
-      }
-    }
-
     // Create chunk reader using factory
-    auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(column_group->format, fs_, column_group->path,
-                                                                         cg_needed_columns, properties_);
+    auto chunk_reader =
+        internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
     if (!chunk_reader) {
       return arrow::Status::Invalid("Failed to create chunk reader for column group " +
@@ -579,32 +555,23 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
     for (size_t cg_idx = 0; cg_idx < column_groups_.size(); ++cg_idx) {
       auto& column_group = column_groups_[cg_idx];
 
-      std::vector<std::string> cg_needed_columns;
-      for (const auto& col_name : needed_columns_) {
-        if (column_group->contains_column(col_name)) {
-          cg_needed_columns.push_back(col_name);
-        }
-      }
+      auto chunk_reader =
+          internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
-      if (!cg_needed_columns.empty()) {
-        auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
-            column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
-
-        if (chunk_reader) {
-          // Try to determine chunk count carefully
-          auto parquet_reader = dynamic_cast<milvus_storage::api::ParquetFormatReader*>(chunk_reader.get());
-          if (parquet_reader) {
-            auto num_chunks_result = parquet_reader->get_num_chunks();
-            if (num_chunks_result.ok()) {
-              max_chunks_found = std::max(max_chunks_found, num_chunks_result.ValueOrDie());
-            }
-          } else {
-            // For non-parquet readers, assume at least 1 chunk
-            max_chunks_found = std::max(max_chunks_found, static_cast<int64_t>(1));
+      if (chunk_reader) {
+        // Try to determine chunk count carefully
+        auto parquet_reader = dynamic_cast<milvus_storage::api::ParquetFormatReader*>(chunk_reader.get());
+        if (parquet_reader) {
+          auto num_chunks_result = parquet_reader->get_num_chunks();
+          if (num_chunks_result.ok()) {
+            max_chunks_found = std::max(max_chunks_found, num_chunks_result.ValueOrDie());
           }
-          // Immediately release the chunk reader to free memory
-          chunk_reader.reset();
+        } else {
+          // For non-parquet readers, assume at least 1 chunk
+          max_chunks_found = std::max(max_chunks_found, static_cast<int64_t>(1));
         }
+        // Immediately release the chunk reader to free memory
+        chunk_reader.reset();
       }
     }
 
@@ -616,34 +583,23 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
       for (size_t cg_idx = 0; cg_idx < column_groups_.size(); ++cg_idx) {
         auto& column_group = column_groups_[cg_idx];
 
-        std::vector<std::string> cg_needed_columns;
-        for (const auto& col_name : needed_columns_) {
-          if (column_group->contains_column(col_name)) {
-            cg_needed_columns.push_back(col_name);
-          }
-        }
+        auto chunk_reader =
+            internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
-        if (!cg_needed_columns.empty()) {
-          auto chunk_reader = internal::api::ChunkReaderFactory::create_reader(
-              column_group->format, fs_, column_group->path, cg_needed_columns, properties_);
-
-          if (chunk_reader) {
-            auto chunk_result = chunk_reader->get_chunk(chunk_idx);
-            if (chunk_result.ok()) {
-              auto chunk = chunk_result.ValueOrDie();
-              if (chunk && chunk->num_rows() > 0) {
-                chunks_to_combine.push_back(chunk);
-              } else {
-                chunks_to_combine.push_back(nullptr);
-              }
+        if (chunk_reader) {
+          auto chunk_result = chunk_reader->get_chunk(chunk_idx);
+          if (chunk_result.ok()) {
+            auto chunk = chunk_result.ValueOrDie();
+            if (chunk && chunk->num_rows() > 0) {
+              chunks_to_combine.push_back(chunk);
             } else {
               chunks_to_combine.push_back(nullptr);
             }
-            // Immediately release the chunk reader to free memory
-            chunk_reader.reset();
           } else {
             chunks_to_combine.push_back(nullptr);
           }
+          // Immediately release the chunk reader to free memory
+          chunk_reader.reset();
         } else {
           chunks_to_combine.push_back(nullptr);
         }
