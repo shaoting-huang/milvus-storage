@@ -41,20 +41,10 @@ namespace milvus_storage {
 FileRowGroupReader::FileRowGroupReader(std::shared_ptr<arrow::fs::FileSystem> fs,
                                        const std::string& path,
                                        const int64_t buffer_size,
-                                       parquet::ReaderProperties reader_props) {
-  auto status = init(fs, path, buffer_size, nullptr, reader_props);
-  if (!status.ok()) {
-    LOG_STORAGE_ERROR_ << "Error initializing file reader: " << status.ToString();
-    throw std::runtime_error(status.ToString());
-  }
-}
-
-FileRowGroupReader::FileRowGroupReader(std::shared_ptr<arrow::fs::FileSystem> fs,
-                                       const std::string& path,
-                                       const std::shared_ptr<arrow::Schema> schema,
-                                       const int64_t buffer_size,
-                                       parquet::ReaderProperties reader_props) {
-  auto status = init(fs, path, buffer_size, schema, reader_props);
+                                       parquet::ReaderProperties reader_props,
+                                       const std::vector<std::string>& needed_columns)
+    : ChunkReader(fs, path, needed_columns) {
+  auto status = init(fs, path, buffer_size, reader_props);
   if (!status.ok()) {
     LOG_STORAGE_ERROR_ << "Error initializing file reader: " << status.ToString();
     throw std::runtime_error(status.ToString());
@@ -64,7 +54,6 @@ FileRowGroupReader::FileRowGroupReader(std::shared_ptr<arrow::fs::FileSystem> fs
 Status FileRowGroupReader::init(std::shared_ptr<arrow::fs::FileSystem> fs,
                                 const std::string& path,
                                 const int64_t buffer_size,
-                                const std::shared_ptr<arrow::Schema> schema,
                                 parquet::ReaderProperties reader_props) {
   fs_ = std::move(fs);
   path_ = path;
@@ -80,39 +69,30 @@ Status FileRowGroupReader::init(std::shared_ptr<arrow::fs::FileSystem> fs,
   auto metadata = file_reader_->parquet_reader()->metadata();
   ASSIGN_OR_RETURN_NOT_OK(file_metadata_, PackedFileMetadata::Make(metadata));
 
-  // If schema is not provided, use the schema from the file
-  if (schema == nullptr) {
-    std::shared_ptr<arrow::Schema> file_schema;
-    auto status = file_reader_->GetSchema(&file_schema);
-    if (!status.ok()) {
-      return Status::ReaderError("Failed to get schema from file: " + status.ToString());
-    }
-    schema_ = file_schema;
-    field_id_list_ = FieldIDList::Make(schema_).value();
-    for (int i = 0; i < field_id_list_.size(); ++i) {
-      needed_columns_.push_back(i);
+  std::shared_ptr<arrow::Schema> file_schema;
+  auto status = file_reader_->GetSchema(&file_schema);
+  if (!status.ok()) {
+    return Status::ReaderError("Failed to get schema from file: " + status.ToString());
+  }
+  schema_ = file_schema;
+
+  // Convert needed column names to column indices
+  std::vector<int> column_indices;
+  if (ChunkReader::needed_columns_.empty()) {
+    for (int i = 0; i < schema_->num_fields(); ++i) {
+      column_indices.push_back(i);
     }
   } else {
-    // schema matching
-    std::map<FieldID, ColumnOffset> field_id_mapping = file_metadata_->GetFieldIDMapping();
-    Result<FieldIDList> status = FieldIDList::Make(schema);
-    if (!status.ok()) {
-      return Status::MetadataParseError("Error getting field id list from schema: " + schema->ToString());
-    }
-    field_id_list_ = status.value();
-    std::vector<std::shared_ptr<arrow::Field>> fields;
-    for (int i = 0; i < field_id_list_.size(); ++i) {
-      FieldID field_id = field_id_list_.Get(i);
-      if (field_id_mapping.find(field_id) != field_id_mapping.end()) {
-        needed_columns_.push_back(field_id_mapping[field_id].col_index);
-        fields.push_back(schema->field(i));
+    for (const auto& col_name : ChunkReader::needed_columns_) {
+      int col_index = schema_->GetFieldIndex(col_name);
+      if (col_index >= 0) {
+        column_indices.push_back(col_index);
       } else {
-        // mark nullable if the field can not be found in the file, in case the reader schema is not marked
-        fields.push_back(schema->field(i)->WithNullable(true));
+        return Status::InvalidArgument("Column " + col_name + " not found in schema for file: " + path_);
       }
     }
-    schema_ = std::make_shared<arrow::Schema>(fields);
   }
+  needed_columns_ = column_indices;
 
   return Status::OK();
 }
@@ -139,28 +119,6 @@ Status FileRowGroupReader::SetRowGroupOffsetAndCount(int row_group_offset, int r
   buffer_size_ = 0;
 
   return Status::OK();
-}
-
-// Helper function to match schema and fill null columns
-void MatchSchemaAndFillNullColumns(const std::shared_ptr<arrow::Table>& table,
-                                   const std::shared_ptr<arrow::Schema>& schema,
-                                   const FieldIDList& field_id_list,
-                                   const std::map<FieldID, ColumnOffset>& field_id_mapping,
-                                   std::shared_ptr<arrow::Table>* out) {
-  std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
-
-  for (int i = 0; i < field_id_list.size(); ++i) {
-    FieldID field_id = field_id_list.Get(i);
-    if (field_id_mapping.find(field_id) != field_id_mapping.end()) {
-      int col = field_id_mapping.at(field_id).col_index;
-      columns.push_back(table->column(col));
-    } else {
-      auto null_array = arrow::MakeArrayOfNull(schema->field(i)->type(), table->num_rows()).ValueOrDie();
-      columns.push_back(std::make_shared<arrow::ChunkedArray>(null_array));
-    }
-  }
-
-  *out = arrow::Table::Make(schema, columns);
 }
 
 arrow::Status FileRowGroupReader::SliceRowGroupFromTable(std::shared_ptr<arrow::Table>* out) {
@@ -237,27 +195,133 @@ arrow::Status FileRowGroupReader::ReadNextRowGroup(std::shared_ptr<arrow::Table>
     return status;
   }
 
-  // Match schema and fill null columns
-  std::shared_ptr<arrow::Table> matched_table;
-  MatchSchemaAndFillNullColumns(new_table, schema_, field_id_list_, file_metadata_->GetFieldIDMapping(),
-                                &matched_table);
-
   // Merge with existing buffer table if needed
   if (buffer_table_ != nullptr) {
-    std::vector<std::shared_ptr<arrow::Table>> tables = {buffer_table_, matched_table};
+    std::vector<std::shared_ptr<arrow::Table>> tables = {buffer_table_, new_table};
     auto merged_table = arrow::ConcatenateTables(tables);
     if (!merged_table.ok()) {
       return merged_table.status();
     }
     buffer_table_ = merged_table.ValueOrDie();
   } else {
-    buffer_table_ = matched_table;
+    buffer_table_ = new_table;
   }
 
   buffer_size_ = GetTableMemorySize(buffer_table_);
   rg_start_ = rg;
 
   return SliceRowGroupFromTable(out);
+}
+
+arrow::Result<std::vector<int64_t>> FileRowGroupReader::get_chunk_indices(
+    const std::vector<int64_t>& row_indices) const {
+  if (!file_metadata_) {
+    return arrow::Status::Invalid("File metadata not initialized");
+  }
+
+  std::vector<int64_t> chunk_indices;
+  chunk_indices.reserve(row_indices.size());
+
+  auto row_group_metadata = file_metadata_->GetRowGroupMetadataVector();
+
+  for (int64_t row_index : row_indices) {
+    if (row_index < 0) {
+      return arrow::Status::Invalid("Row index cannot be negative: " + std::to_string(row_index));
+    }
+
+    // Find which chunk (row group) contains this row
+    int64_t current_row_start = 0;
+    int64_t chunk_index = -1;
+
+    for (size_t i = 0; i < row_group_metadata.size(); ++i) {
+      int64_t chunk_num_rows = row_group_metadata.Get(i).row_num();
+      if (row_index >= current_row_start && row_index < current_row_start + chunk_num_rows) {
+        chunk_index = static_cast<int64_t>(i);
+        break;
+      }
+      current_row_start += chunk_num_rows;
+    }
+
+    if (chunk_index == -1) {
+      return arrow::Status::Invalid("Row index " + std::to_string(row_index) + " is out of range. File has " +
+                                    std::to_string(current_row_start) + " rows");
+    }
+
+    chunk_indices.push_back(chunk_index);
+  }
+
+  return chunk_indices;
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>> FileRowGroupReader::get_chunk(int64_t chunk_index) const {
+  ARROW_RETURN_NOT_OK(validate_chunk_index(chunk_index));
+
+  if (!file_reader_) {
+    return arrow::Status::Invalid("File reader not initialized");
+  }
+
+  // Read the specific row group
+  std::shared_ptr<arrow::Table> table;
+  auto status = file_reader_->ReadRowGroup(static_cast<int>(chunk_index), needed_columns_, &table);
+  if (!status.ok()) {
+    return status;
+  }
+
+  if (!table) {
+    return arrow::Status::Invalid("Failed to read row group " + std::to_string(chunk_index));
+  }
+  return ConvertTableToRecordBatch(table);
+}
+
+arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> FileRowGroupReader::get_chunks(
+    const std::vector<int64_t>& chunk_indices, int64_t parallelism) const {
+  std::vector<std::shared_ptr<arrow::RecordBatch>> chunks;
+  chunks.reserve(chunk_indices.size());
+
+  if (parallelism <= 1 || chunk_indices.size() == 1) {
+    // Sequential execution
+    for (int64_t chunk_index : chunk_indices) {
+      ARROW_ASSIGN_OR_RAISE(auto chunk, get_chunk(chunk_index));
+      chunks.push_back(chunk);
+    }
+  } else {
+    // TODO: Implement parallel reading if needed
+    for (int64_t chunk_index : chunk_indices) {
+      ARROW_ASSIGN_OR_RAISE(auto chunk, get_chunk(chunk_index));
+      chunks.push_back(chunk);
+    }
+  }
+
+  return chunks;
+}
+
+arrow::Result<int64_t> FileRowGroupReader::get_chunk_size(int64_t chunk_index) const {
+  ARROW_RETURN_NOT_OK(validate_chunk_index(chunk_index));
+
+  if (!file_metadata_) {
+    return arrow::Status::Invalid("File metadata not initialized");
+  }
+
+  auto row_group_metadata = file_metadata_->GetRowGroupMetadataVector();
+  return row_group_metadata.Get(chunk_index).memory_size();
+}
+
+arrow::Status FileRowGroupReader::validate_chunk_index(int64_t chunk_index) const {
+  if (chunk_index < 0) {
+    return arrow::Status::Invalid("Chunk index cannot be negative: " + std::to_string(chunk_index));
+  }
+
+  if (!file_metadata_) {
+    return arrow::Status::Invalid("File metadata not initialized");
+  }
+
+  auto row_group_metadata = file_metadata_->GetRowGroupMetadataVector();
+  if (chunk_index >= static_cast<int64_t>(row_group_metadata.size())) {
+    return arrow::Status::Invalid("Chunk index " + std::to_string(chunk_index) + " is out of range. File has " +
+                                  std::to_string(row_group_metadata.size()) + " chunks");
+  }
+
+  return arrow::Status::OK();
 }
 
 arrow::Status FileRowGroupReader::Close() {

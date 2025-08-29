@@ -22,8 +22,6 @@
 #include "milvus-storage/writer.h"
 #include "milvus-storage/reader.h"
 #include "milvus-storage/manifest.h"
-#include "milvus-storage/format/format_reader.h"
-#include "milvus-storage/format/format_writer.h"
 #include "include/test_util.h"
 
 using namespace milvus_storage::api;

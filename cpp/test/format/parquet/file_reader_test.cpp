@@ -32,7 +32,7 @@ TEST_F(FileReaderTest, ReadAllColumnsWithEnoughMemory) {
   // read all row groups with enough memory. Only 1 readRowGroups() call.
   SetupOneFile();
   // read all row groups
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -64,7 +64,7 @@ TEST_F(FileReaderTest, ReadAllColumnsWithFewerMemory) {
   SetupOneFile();
   // read all row groups
   size_t fewer_memory = 2 * 1024 * 1024;
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, fewer_memory);
+  FileRowGroupReader fr(fs_, one_file_path_, fewer_memory);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -93,7 +93,7 @@ TEST_F(FileReaderTest, ReadAllColumnsWithFewerMemory) {
 
 TEST_F(FileReaderTest, ReadPartialRowGroup) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(1, 1));
 
   // Read and validate row counts
@@ -116,82 +116,21 @@ TEST_F(FileReaderTest, ReadPartialRowGroup) {
 
 TEST_F(FileReaderTest, NonExistedRowGroup) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_FALSE(fr.SetRowGroupOffsetAndCount(100, 1).ok());
   ASSERT_STATUS_OK(fr.Close());
 }
 
 TEST_F(FileReaderTest, ReadNoRowGroup) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_FALSE(fr.SetRowGroupOffsetAndCount(0, 0).ok());
-  ASSERT_STATUS_OK(fr.Close());
-}
-
-TEST_F(FileReaderTest, SchemaEvolutionMoreColumns) {
-  SetupOneFile();
-
-  std::shared_ptr<arrow::Schema> new_schema = arrow::schema(
-      {schema_->field(0)->Copy(), schema_->field(1)->Copy(),
-       arrow::field("float", arrow::float32(), true, arrow::key_value_metadata({ARROW_FIELD_ID_KEY}, {"400"})),
-       schema_->field(2)->Copy()});
-
-  FileRowGroupReader fr(fs_, one_file_path_, new_schema, reader_memory_);
-  auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
-  ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
-
-  std::shared_ptr<arrow::Table> table;
-  ASSERT_STATUS_OK(fr.ReadNextRowGroup(&table));
-
-  ASSERT_EQ(table->num_columns(), new_schema->num_fields());
-  ASSERT_EQ(table->column(2)->null_count(), table->num_rows());  // Check if extra column has nulls
-
-  ASSERT_STATUS_OK(fr.Close());
-}
-
-TEST_F(FileReaderTest, SchemaEvolutionFewerColumns) {
-  SetupOneFile();
-
-  std::shared_ptr<arrow::Schema> new_schema = arrow::schema({schema_->field(1)->Copy(), schema_->field(0)->Copy()});
-
-  FileRowGroupReader fr(fs_, one_file_path_, new_schema, reader_memory_);
-  auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
-  ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
-
-  std::shared_ptr<arrow::Table> table;
-  ASSERT_STATUS_OK(fr.ReadNextRowGroup(&table));
-
-  ASSERT_EQ(table->num_columns(), 2);
-  ASSERT_EQ(table->schema()->field(0)->name(), "int64");
-  ASSERT_EQ(table->schema()->field(1)->name(), "int32");
-
-  ASSERT_STATUS_OK(fr.Close());
-}
-
-TEST_F(FileReaderTest, SchemaEvolutionColumnOrder) {
-  SetupOneFile();
-
-  std::shared_ptr<arrow::Schema> new_schema =
-      arrow::schema({schema_->field(2)->Copy(), schema_->field(1)->Copy(), schema_->field(0)->Copy()});
-
-  FileRowGroupReader fr(fs_, one_file_path_, new_schema, reader_memory_);
-  auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
-  ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
-
-  std::shared_ptr<arrow::Table> table;
-  ASSERT_STATUS_OK(fr.ReadNextRowGroup(&table));
-
-  ASSERT_EQ(table->num_columns(), 3);
-  ASSERT_EQ(table->schema()->field(0)->name(), "str");
-  ASSERT_EQ(table->schema()->field(1)->name(), "int64");
-  ASSERT_EQ(table->schema()->field(2)->name(), "int32");
-
   ASSERT_STATUS_OK(fr.Close());
 }
 
 TEST_F(FileReaderTest, RowGroupMetadata) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
 
   auto row_group_metadata = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_GT(row_group_metadata.size(), 0);
@@ -245,7 +184,7 @@ TEST_F(FileReaderTest, ReadWithoutSchema) {
 
 TEST_F(FileReaderTest, ReadWithNotEnoughMemory) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, 1024);
+  FileRowGroupReader fr(fs_, one_file_path_, 1024);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -258,13 +197,13 @@ TEST_F(FileReaderTest, ReadWithNotEnoughMemory) {
 TEST_F(FileReaderTest, FileNotExists) {
   // Test reading non-existent file
   std::string non_existent_path = "/tmp/non_existent_file.parquet";
-  EXPECT_THROW(FileRowGroupReader(fs_, non_existent_path, schema_, reader_memory_), std::runtime_error);
+  EXPECT_THROW(FileRowGroupReader(fs_, non_existent_path, reader_memory_), std::runtime_error);
 }
 
 TEST_F(FileReaderTest, InvalidBufferSize) {
   SetupOneFile();
   // Test with negative buffer size
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, -1);
+  FileRowGroupReader fr(fs_, one_file_path_, -1);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, 1));
 
@@ -277,7 +216,7 @@ TEST_F(FileReaderTest, InvalidBufferSize) {
 TEST_F(FileReaderTest, ZeroBufferSize) {
   SetupOneFile();
   // Test with zero buffer size
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, 0);
+  FileRowGroupReader fr(fs_, one_file_path_, 0);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, 1));
 
@@ -289,14 +228,14 @@ TEST_F(FileReaderTest, ZeroBufferSize) {
 
 TEST_F(FileReaderTest, NegativeRowGroupOffset) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_FALSE(fr.SetRowGroupOffsetAndCount(-1, 1).ok());
   ASSERT_STATUS_OK(fr.Close());
 }
 
 TEST_F(FileReaderTest, InvalidRowGroupRange) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
 
   // Test with offset + count exceeding total row groups
@@ -310,7 +249,7 @@ TEST_F(FileReaderTest, InvalidRowGroupRange) {
 
 TEST_F(FileReaderTest, ReadAfterClose) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_STATUS_OK(fr.Close());
 
   std::shared_ptr<arrow::Table> table;
@@ -321,14 +260,14 @@ TEST_F(FileReaderTest, ReadAfterClose) {
 
 TEST_F(FileReaderTest, MultipleCloseCalls) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   ASSERT_STATUS_OK(fr.Close());
   ASSERT_STATUS_OK(fr.Close());  // Multiple close calls should be safe
 }
 
 TEST_F(FileReaderTest, ReadWithoutSettingRowGroupRange) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
 
   std::shared_ptr<arrow::Table> table;
   ASSERT_STATUS_OK(fr.ReadNextRowGroup(&table));
@@ -338,7 +277,7 @@ TEST_F(FileReaderTest, ReadWithoutSettingRowGroupRange) {
 
 TEST_F(FileReaderTest, ReadAfterAllRowGroups) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -356,35 +295,12 @@ TEST_F(FileReaderTest, ReadAfterAllRowGroups) {
   ASSERT_STATUS_OK(fr.Close());
 }
 
-TEST_F(FileReaderTest, SchemaEvolutionWithInvalidFieldID) {
-  SetupOneFile();
-
-  // Create schema with invalid field ID (non-numeric)
-  auto invalid_field =
-      arrow::field("invalid", arrow::int32(), true, arrow::key_value_metadata({ARROW_FIELD_ID_KEY}, {"invalid_id"}));
-  std::shared_ptr<arrow::Schema> invalid_schema = arrow::schema({invalid_field});
-
-  // Should handle gracefully - expect exception for invalid field ID
-  EXPECT_THROW(FileRowGroupReader(fs_, one_file_path_, invalid_schema, reader_memory_), std::invalid_argument);
-}
-
-TEST_F(FileReaderTest, SchemaEvolutionWithMissingFieldIDMetadata) {
-  SetupOneFile();
-
-  // Create schema without field ID metadata
-  auto field_without_id = arrow::field("no_id", arrow::int32(), true);
-  std::shared_ptr<arrow::Schema> schema_without_id = arrow::schema({field_without_id});
-
-  // Should handle gracefully - expect exception for missing field ID
-  EXPECT_THROW(FileRowGroupReader(fs_, one_file_path_, schema_without_id, reader_memory_), std::runtime_error);
-}
-
 TEST_F(FileReaderTest, MemoryPressureWithLargeRowGroups) {
   SetupOneFile();
 
   // Test with very small memory limit to force multiple reads
   int64_t tiny_memory = 1024;  // 1KB
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, tiny_memory);
+  FileRowGroupReader fr(fs_, one_file_path_, tiny_memory);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -406,7 +322,7 @@ TEST_F(FileReaderTest, MemoryPressureWithLargeRowGroups) {
 
 TEST_F(FileReaderTest, ConcurrentReadOperations) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -430,7 +346,7 @@ TEST_F(FileReaderTest, ConcurrentReadOperations) {
 
 TEST_F(FileReaderTest, ResetRowGroupRange) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
 
   // Set initial range
@@ -454,31 +370,10 @@ TEST_F(FileReaderTest, ResetRowGroupRange) {
 
 TEST_F(FileReaderTest, EmptyRowGroupRange) {
   SetupOneFile();
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, reader_memory_);
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
 
   // Test with empty range (should fail)
   ASSERT_FALSE(fr.SetRowGroupOffsetAndCount(0, 0).ok());
-
-  ASSERT_STATUS_OK(fr.Close());
-}
-
-TEST_F(FileReaderTest, SchemaEvolutionWithDuplicateFieldIDs) {
-  SetupOneFile();
-
-  // Create schema with duplicate field IDs
-  auto field1 = arrow::field("field1", arrow::int32(), true, arrow::key_value_metadata({ARROW_FIELD_ID_KEY}, {"0"}));
-  auto field2 = arrow::field("field2", arrow::int64(), true,
-                             arrow::key_value_metadata({ARROW_FIELD_ID_KEY}, {"0"}));  // Same ID as field1
-  std::shared_ptr<arrow::Schema> duplicate_schema = arrow::schema({field1, field2});
-
-  // Should handle gracefully (first field with ID 0 will be used)
-  FileRowGroupReader fr(fs_, one_file_path_, duplicate_schema, reader_memory_);
-  auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
-  ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, 1));
-
-  std::shared_ptr<arrow::Table> table;
-  ASSERT_STATUS_OK(fr.ReadNextRowGroup(&table));
-  ASSERT_EQ(table->num_columns(), 2);
 
   ASSERT_STATUS_OK(fr.Close());
 }
@@ -488,7 +383,7 @@ TEST_F(FileReaderTest, VeryLargeBufferSize) {
 
   // Test with very large buffer size
   int64_t huge_memory = INT64_MAX;
-  FileRowGroupReader fr(fs_, one_file_path_, schema_, huge_memory);
+  FileRowGroupReader fr(fs_, one_file_path_, huge_memory);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, row_group_sizes.size()));
 
@@ -503,8 +398,8 @@ TEST_F(FileReaderTest, VeryLargeBufferSize) {
 TEST_F(FileReaderTest, NullSchemaPointer) {
   SetupOneFile();
 
-  // Test with null schema pointer (should use file schema)
-  FileRowGroupReader fr(fs_, one_file_path_, nullptr, reader_memory_);
+  // Test with default parameters (should use file schema)
+  FileRowGroupReader fr(fs_, one_file_path_, reader_memory_);
   auto row_group_sizes = fr.file_metadata()->GetRowGroupMetadataVector();
   ASSERT_STATUS_OK(fr.SetRowGroupOffsetAndCount(0, 1));
 

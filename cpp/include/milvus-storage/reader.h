@@ -214,7 +214,7 @@ class ChunkReader {
    * @return Result containing vector of record batches for the specified chunks, or error status
    */
   [[nodiscard]] virtual arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> get_chunks(
-      const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const;
+      const std::vector<int64_t>& chunk_indices, int64_t parallelism = 1) const = 0;
 
   /**
    * @brief Gets the memory size of a specific chunk
@@ -466,3 +466,34 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
 };
 
 }  // namespace milvus_storage::api
+
+namespace internal::api {
+
+/**
+ * @brief Factory for creating format-specific chunk readers
+ *
+ * This factory creates appropriate ChunkReader instances for different
+ * file formats. Each reader is responsible for reading one column group only.
+ */
+class ChunkReaderFactory {
+  public:
+  /**
+   * @brief Create a chunk reader for a column group
+   *
+   * @param column_group Column group containing format, path, and metadata
+   * @param fs Filesystem interface
+   * @param needed_columns Vector of column names to read (empty = all columns)
+   * @param properties Read properties
+   * @return Unique pointer to the created chunk reader
+   */
+  static std::unique_ptr<milvus_storage::api::ChunkReader> create_reader(
+      std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+      std::shared_ptr<arrow::fs::FileSystem> fs,
+      const std::vector<std::string>& needed_columns,
+      const milvus_storage::api::ReadProperties& properties);
+
+  private:
+  ChunkReaderFactory() = default;
+};
+
+}  // namespace internal::api

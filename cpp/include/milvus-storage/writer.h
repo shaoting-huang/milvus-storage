@@ -24,11 +24,15 @@
 #include <arrow/type.h>
 #include <arrow/result.h>
 #include <parquet/properties.h>
+#include <parquet/arrow/writer.h>
 
 #include "milvus-storage/manifest.h"
+#include "milvus-storage/common/config.h"
 
 namespace milvus_storage {
+class ParquetFileWriter;  // Forward declaration
 class ColumnGroup;
+class GroupFieldIDList;  // Forward declaration
 }  // namespace milvus_storage
 
 namespace internal::api {
@@ -61,6 +65,9 @@ enum class CompressionType {
  * and other write-time optimizations that affect performance and storage efficiency.
  */
 struct WriteProperties {
+  /// Maximum size of the part to upload to S3
+  int64_t multi_part_upload_size = 0;
+
   /// Maximum number of rows per row group (affects memory usage and query granularity)
   int64_t max_row_group_size = 64 * 1024;
 
@@ -353,6 +360,25 @@ class SizeBasedColumnGroupPolicy : public ColumnGroupPolicy {
   mutable std::vector<int64_t> column_sizes_;  // Cached column sizes from sampling
 };
 
+// ==================== Internal ColumnGroupWriter Implementation ====================
+
+class ColumnGroupWriter {
+  public:
+  virtual ~ColumnGroupWriter() = default;
+
+  virtual arrow::Status Init() = 0;
+  virtual arrow::Status Write(const std::shared_ptr<arrow::RecordBatch> record) = 0;
+  virtual arrow::Status Flush() = 0;
+  virtual arrow::Status Close() = 0;
+  virtual int64_t count() const = 0;
+  virtual int64_t bytes_written() const = 0;
+  virtual int64_t num_chunks() const = 0;
+
+  // Metadata management methods
+  virtual arrow::Status AppendKVMetadata(const std::string& key, const std::string& value) = 0;
+  virtual arrow::Status AddUserMetadata(const std::vector<std::pair<std::string, std::string>>& metadata) = 0;
+};
+
 /**
  * @brief High-level writer interface for milvus storage data
  *
@@ -488,9 +514,6 @@ class Writer {
   [[nodiscard]] WriteStats get_stats() const;
 
   private:
-  // Forward declarations for internal types
-  class ColumnGroupWriter;
-
   // ==================== Internal Data Members ====================
 
   std::shared_ptr<arrow::fs::FileSystem> fs_;               ///< Filesystem interface for data access
@@ -499,11 +522,10 @@ class Writer {
   std::unique_ptr<ColumnGroupPolicy> column_group_policy_;  ///< Policy for organizing columns
   WriteProperties properties_;                              ///< Write configuration properties
 
-  std::shared_ptr<Manifest> manifest_;                       ///< Dataset manifest being built
-  std::vector<std::shared_ptr<ColumnGroup>> column_groups_;  ///< Column groups metadata
-  std::map<int64_t, std::unique_ptr<internal::api::FormatWriter>>
-      column_group_writers_;                            ///< Individual writers per column group
-  std::map<std::string, std::string> custom_metadata_;  ///< Custom metadata for the manifest
+  std::shared_ptr<Manifest> manifest_;                                          ///< Dataset manifest being built
+  std::vector<std::shared_ptr<ColumnGroup>> column_groups_;                     ///< Column groups metadata
+  std::map<int64_t, std::unique_ptr<ColumnGroupWriter>> column_group_writers_;  ///< Writers for each column group
+  std::map<std::string, std::string> custom_metadata_;                          ///< Custom metadata for the manifest
 
   WriteStats stats_;  ///< Current write statistics
   bool closed_;       ///< Whether the writer has been closed
@@ -529,7 +551,7 @@ class Writer {
    * @param batch The batch to distribute
    * @return Status indicating success or error condition
    */
-  arrow::Status distribute_batch(const std::shared_ptr<arrow::RecordBatch>& batch, size_t next_batch_size);
+  arrow::Status distribute_batch(const std::shared_ptr<arrow::RecordBatch>& batch);
 
   /**
    * @brief Generates a unique file path for a column group
@@ -546,6 +568,50 @@ class Writer {
    * @return Status indicating success or error condition
    */
   arrow::Status balanceMemoryHeap();
+
+  /**
+   * @brief Creates group field id list for historical compatibility
+   *
+   * This function extracts the field ID list creation logic for historical
+   * compatibility purposes. It creates the schema field ID list and column
+   * group indices needed for the GroupFieldIDList.
+   *
+   * @return Result containing the GroupFieldIDList or error status
+   */
+  arrow::Result<std::string> field_id_list_meta();
 };
 
 }  // namespace milvus_storage::api
+
+namespace internal::api {
+
+/**
+ * @brief Factory for creating format-specific chunk writers
+ *
+ * This factory creates appropriate ParquetFileWriter instances for column groups.
+ * Each writer is responsible for writing one column group only.
+ */
+class ChunkWriterFactory {
+  public:
+  /**
+   * @brief Create a chunk writer for a column group
+   *
+   * @param column_group Column group containing format, path, and metadata
+   * @param schema Full schema of the dataset
+   * @param fs Filesystem interface
+   * @param storage_config Storage configuration
+   * @param custom_metadata Custom metadata to include in the writer
+   * @return Unique pointer to the created chunk writer
+   */
+  static std::unique_ptr<milvus_storage::api::ColumnGroupWriter> create_writer(
+      std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
+      std::shared_ptr<arrow::Schema> schema,
+      std::shared_ptr<arrow::fs::FileSystem> fs,
+      const milvus_storage::StorageConfig& storage_config,
+      const std::map<std::string, std::string>& custom_metadata);
+
+  private:
+  ChunkWriterFactory() = default;
+};
+
+}  // namespace internal::api

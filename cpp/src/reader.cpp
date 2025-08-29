@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "milvus-storage/reader.h"
+#include "milvus-storage/format/parquet/file_reader.h"
+#include "milvus-storage/common/constants.h"
 
 #include <arrow/array.h>
 #include <arrow/builder.h>
@@ -26,7 +28,6 @@
 #include <parquet/properties.h>
 
 #include <algorithm>
-#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,57 +36,8 @@
 #include <set>
 
 #include "milvus-storage/common/arrow_util.h"
-#include "milvus-storage/format/format_reader.h"
 
 namespace milvus_storage::api {
-
-// ==================== ChunkReader Implementation ====================
-
-// Base class implementation of get_chunks using the pure virtual get_chunk method
-arrow::Result<std::vector<std::shared_ptr<arrow::RecordBatch>>> ChunkReader::get_chunks(
-    const std::vector<int64_t>& chunk_indices, int64_t parallelism) const {
-  if (chunk_indices.empty()) {
-    return arrow::Status::Invalid("Chunk indices vector cannot be empty");
-  }
-
-  if (parallelism < 1) {
-    return arrow::Status::Invalid("Parallelism must be at least 1, got: " + std::to_string(parallelism));
-  }
-
-  // Validate all chunk indices
-  for (const auto& chunk_index : chunk_indices) {
-    ARROW_RETURN_NOT_OK(validate_chunk_index(chunk_index));
-  }
-
-  std::vector<std::shared_ptr<arrow::RecordBatch>> result_batches;
-  result_batches.reserve(chunk_indices.size());
-
-  if (parallelism == 1 || chunk_indices.size() == 1) {
-    // Sequential execution
-    for (const auto& chunk_index : chunk_indices) {
-      ARROW_ASSIGN_OR_RAISE(auto batch, get_chunk(chunk_index));
-      result_batches.push_back(batch);
-    }
-  } else {
-    // Parallel execution using std::async
-    std::vector<std::future<arrow::Result<std::shared_ptr<arrow::RecordBatch>>>> futures;
-    futures.reserve(chunk_indices.size());
-
-    // Launch parallel tasks
-    for (const auto& chunk_index : chunk_indices) {
-      auto future = std::async(std::launch::async, [this, chunk_index]() { return get_chunk(chunk_index); });
-      futures.push_back(std::move(future));
-    }
-
-    // Collect results in order
-    for (auto& future : futures) {
-      ARROW_ASSIGN_OR_RAISE(auto batch, future.get());
-      result_batches.push_back(batch);
-    }
-  }
-
-  return result_batches;
-}
 
 // ==================== Reader Implementation ====================
 
@@ -201,8 +153,7 @@ arrow::Result<std::shared_ptr<arrow::RecordBatchReader>> Reader::get_record_batc
   }
   auto projected_schema = arrow::schema(needed_fields);
 
-  // Create and return our custom PackedRecordBatchReader
-  // This provides memory-controlled, row-aligned streaming access across column groups
+  // Always use PackedRecordBatchReader - it now works with both packed and regular parquet files
   try {
     auto reader = std::make_shared<PackedRecordBatchReader>(fs_, needed_column_groups_, projected_schema,
                                                             needed_columns_, properties_, buffer_size);
@@ -219,10 +170,6 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
     return arrow::Status::Invalid("Row indices vector cannot be empty");
   }
 
-  if (parallelism < 1) {
-    return arrow::Status::Invalid("Parallelism must be at least 1, got: " + std::to_string(parallelism));
-  }
-
   // Validate that all row indices are non-negative
   for (const auto& row_index : row_indices) {
     if (row_index < 0) {
@@ -237,117 +184,77 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> Reader::take(const std::vecto
     return arrow::Status::Invalid("No column groups found for the requested columns");
   }
 
-  // For each column group, we need to create a format reader and extract the requested rows
+  // Sequential execution across column groups - no parallelism for now
   std::vector<std::shared_ptr<arrow::RecordBatch>> column_group_batches;
   column_group_batches.reserve(needed_column_groups_.size());
 
-  if (parallelism == 1 || needed_column_groups_.size() == 1) {
-    // Sequential execution across column groups
-    for (const auto& column_group : needed_column_groups_) {
-      auto chunk_reader =
-          internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
+  for (const auto& column_group : needed_column_groups_) {
+    auto chunk_reader =
+        internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
 
-      if (!chunk_reader) {
-        return arrow::Status::Invalid("Failed to create chunk reader for column group " +
-                                      std::to_string(column_group->id));
-      }
-
-      // Map row indices to chunk indices
-      ARROW_ASSIGN_OR_RAISE(auto chunk_indices, chunk_reader->get_chunk_indices(row_indices));
-
-      // Get unique chunk indices to minimize I/O
-      std::vector<int64_t> unique_chunk_indices = chunk_indices;
-      std::sort(unique_chunk_indices.begin(), unique_chunk_indices.end());
-      unique_chunk_indices.erase(std::unique(unique_chunk_indices.begin(), unique_chunk_indices.end()),
-                                 unique_chunk_indices.end());
-
-      // Read the required chunks
-      ARROW_ASSIGN_OR_RAISE(auto chunks, chunk_reader->get_chunks(unique_chunk_indices, parallelism));
-
-      // For now, use a simplified implementation that returns requested number of rows
-      // TODO: Implement proper row extraction logic
-      if (!chunks.empty()) {
-        auto first_chunk = chunks[0];
-        if (first_chunk && first_chunk->num_rows() >= static_cast<int64_t>(row_indices.size())) {
-          // Slice the first chunk to get the number of rows we need
-          auto sliced_batch = first_chunk->Slice(0, row_indices.size());
-          column_group_batches.push_back(sliced_batch);
-        } else if (first_chunk) {
-          column_group_batches.push_back(first_chunk);
-        }
-      }
-    }
-  } else {
-    // Parallel execution across column groups
-    std::vector<std::future<arrow::Result<std::shared_ptr<arrow::RecordBatch>>>> futures;
-    futures.reserve(needed_column_groups_.size());
-
-    for (const auto& column_group : needed_column_groups_) {
-      auto future = std::async(
-          std::launch::async,
-          [this, &column_group, &row_indices, parallelism]() -> arrow::Result<std::shared_ptr<arrow::RecordBatch>> {
-            auto chunk_reader =
-                internal::api::ChunkReaderFactory::create_reader(column_group, fs_, needed_columns_, properties_);
-
-            if (!chunk_reader) {
-              return arrow::Status::Invalid("Failed to create chunk reader for column group " +
-                                            std::to_string(column_group->id));
-            }
-
-            // Map row indices to chunk indices
-            ARROW_ASSIGN_OR_RAISE(auto chunk_indices, chunk_reader->get_chunk_indices(row_indices));
-
-            // Get unique chunk indices to minimize I/O
-            std::vector<int64_t> unique_chunk_indices = chunk_indices;
-            std::sort(unique_chunk_indices.begin(), unique_chunk_indices.end());
-            unique_chunk_indices.erase(std::unique(unique_chunk_indices.begin(), unique_chunk_indices.end()),
-                                       unique_chunk_indices.end());
-
-            // Read the required chunks
-            ARROW_ASSIGN_OR_RAISE(auto chunks, chunk_reader->get_chunks(unique_chunk_indices, 1));
-
-            // For now, use a simplified implementation that returns requested number of rows
-            // TODO: Implement proper row extraction logic
-            if (!chunks.empty()) {
-              auto first_chunk = chunks[0];
-              if (first_chunk && first_chunk->num_rows() >= static_cast<int64_t>(row_indices.size())) {
-                // Slice the first chunk to get the number of rows we need
-                return first_chunk->Slice(0, row_indices.size());
-              } else if (first_chunk) {
-                return first_chunk;
-              }
-            }
-            return arrow::Status::Invalid("No chunks available");
-          });
-      futures.push_back(std::move(future));
+    if (!chunk_reader) {
+      return arrow::Status::Invalid("Failed to create chunk reader for column group " +
+                                    std::to_string(column_group->id));
     }
 
-    // Collect results
-    for (auto& future : futures) {
-      ARROW_ASSIGN_OR_RAISE(auto batch, future.get());
-      column_group_batches.push_back(batch);
+    // Map row indices to chunk indices
+    ARROW_ASSIGN_OR_RAISE(auto chunk_indices, chunk_reader->get_chunk_indices(row_indices));
+
+    // Get unique chunk indices to minimize I/O
+    std::vector<int64_t> unique_chunk_indices = chunk_indices;
+    std::sort(unique_chunk_indices.begin(), unique_chunk_indices.end());
+    unique_chunk_indices.erase(std::unique(unique_chunk_indices.begin(), unique_chunk_indices.end()),
+                               unique_chunk_indices.end());
+
+    // Read the required chunks (sequential only)
+    ARROW_ASSIGN_OR_RAISE(auto chunks, chunk_reader->get_chunks(unique_chunk_indices, 1));
+
+    // Combine chunks into a single table for this column group
+    if (chunks.empty()) {
+      return arrow::Status::Invalid("No data found for the specified row indices in column group " +
+                                    std::to_string(column_group->id));
     }
+
+    std::vector<std::shared_ptr<arrow::Table>> tables;
+    tables.reserve(chunks.size());
+    for (const auto& chunk : chunks) {
+      ARROW_ASSIGN_OR_RAISE(auto table, arrow::Table::FromRecordBatches({chunk}));
+      tables.push_back(table);
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto combined_table, arrow::ConcatenateTables(tables));
+    ARROW_ASSIGN_OR_RAISE(auto result_batch, combined_table->CombineChunksToBatch());
+
+    column_group_batches.push_back(result_batch);
   }
 
-  // Now we need to merge the column group batches into a single RecordBatch
-  // Each column group batch contains a subset of columns for the same rows
+  // Combine all column group batches into a single batch
   if (column_group_batches.size() == 1) {
     return column_group_batches[0];
   }
 
-  // Merge multiple column group batches
-  std::vector<std::shared_ptr<arrow::Array>> merged_arrays;
-  std::vector<std::shared_ptr<arrow::Field>> merged_fields;
+  // Merge batches from different column groups
+  std::vector<std::shared_ptr<arrow::Array>> combined_arrays;
+  std::vector<std::shared_ptr<arrow::Field>> combined_fields;
 
-  for (const auto& batch : column_group_batches) {
-    for (int i = 0; i < batch->num_columns(); ++i) {
-      merged_arrays.push_back(batch->column(i));
-      merged_fields.push_back(batch->schema()->field(i));
+  for (const auto& column_name : needed_columns_) {
+    // Find this column in one of the column group batches
+    for (const auto& batch : column_group_batches) {
+      auto field_index = batch->schema()->GetFieldIndex(column_name);
+      if (field_index >= 0) {
+        combined_arrays.push_back(batch->column(field_index));
+        combined_fields.push_back(batch->schema()->field(field_index));
+        break;
+      }
     }
   }
 
-  auto merged_schema = arrow::schema(merged_fields);
-  return arrow::RecordBatch::Make(merged_schema, row_indices.size(), merged_arrays);
+  if (combined_arrays.empty()) {
+    return arrow::Status::Invalid("No arrays found for the requested columns");
+  }
+
+  auto combined_schema = arrow::schema(combined_fields);
+  return arrow::RecordBatch::Make(combined_schema, combined_arrays[0]->length(), combined_arrays);
 }
 
 // ==================== PackedRecordBatchReader Implementation ====================
@@ -560,11 +467,12 @@ arrow::Status PackedRecordBatchReader::ReadNext(std::shared_ptr<arrow::RecordBat
 
       if (chunk_reader) {
         // Try to determine chunk count carefully
-        auto parquet_reader = dynamic_cast<milvus_storage::api::ParquetFormatReader*>(chunk_reader.get());
-        if (parquet_reader) {
-          auto num_chunks_result = parquet_reader->get_num_chunks();
-          if (num_chunks_result.ok()) {
-            max_chunks_found = std::max(max_chunks_found, num_chunks_result.ValueOrDie());
+        auto file_reader = dynamic_cast<milvus_storage::FileRowGroupReader*>(chunk_reader.get());
+        if (file_reader) {
+          auto metadata = file_reader->file_metadata();
+          if (metadata) {
+            int64_t num_chunks = metadata->GetRowGroupMetadataVector().size();
+            max_chunks_found = std::max(max_chunks_found, num_chunks);
           }
         } else {
           // For non-parquet readers, assume at least 1 chunk
