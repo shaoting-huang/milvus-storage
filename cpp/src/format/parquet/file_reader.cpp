@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <memory>
-#include <numeric>
 #include <string>
 
 #include <arrow/array/util.h>
@@ -34,7 +33,6 @@
 #include "milvus-storage/common/log.h"
 #include "milvus-storage/common/arrow_util.h"
 #include "milvus-storage/common/status.h"
-#include "milvus-storage/packed/chunk_manager.h"
 
 namespace milvus_storage {
 
@@ -304,6 +302,17 @@ arrow::Result<int64_t> FileRowGroupReader::get_chunk_size(int64_t chunk_index) c
 
   auto row_group_metadata = file_metadata_->GetRowGroupMetadataVector();
   return row_group_metadata.Get(chunk_index).memory_size();
+}
+
+arrow::Result<int64_t> FileRowGroupReader::get_chunk_row_num(int64_t chunk_index) const {
+  ARROW_RETURN_NOT_OK(validate_chunk_index(chunk_index));
+
+  if (!file_metadata_) {
+    return arrow::Status::Invalid("File metadata not initialized");
+  }
+
+  auto row_group_metadata = file_metadata_->GetRowGroupMetadataVector();
+  return row_group_metadata.Get(chunk_index).row_num();
 }
 
 arrow::Status FileRowGroupReader::validate_chunk_index(int64_t chunk_index) const {

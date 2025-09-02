@@ -220,12 +220,23 @@ class ChunkReader {
    * @brief Gets the memory size of a specific chunk
    *
    * This method returns the memory size of a chunk by consulting the cached metadata
-   * in the format reader, allowing for accurate memory planning without estimation.
+   * in the chunk reader, allowing for accurate memory planning.
    *
    * @param chunk_index Zero-based index of the chunk
    * @return Result containing the chunk size in bytes, or error status
    */
   [[nodiscard]] virtual arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const = 0;
+
+  /**
+   * @brief Gets the number of rows in a specific chunk
+   *
+   * This method returns the actual number of rows in a chunk by consulting the cached metadata
+   * in the format reader, allowing for accurate row counting and alignment
+   *
+   * @param chunk_index Zero-based index of the chunk
+   * @return Result containing the number of rows in the chunk, or error status
+   */
+  [[nodiscard]] virtual arrow::Result<int64_t> get_chunk_row_num(int64_t chunk_index) const = 0;
 
   protected:
   std::shared_ptr<arrow::fs::FileSystem> fs_;  ///< Filesystem interface for data access
@@ -424,6 +435,7 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   struct ColumnGroupState {
     int64_t current_chunk = -1;  // Current chunk index being read (-1 means no chunk loaded yet)
     int64_t row_offset = 0;      // Current row offset in this column group
+    int64_t rows_read = 0;       // Total rows read from this column group
     int64_t memory_usage = 0;    // Current memory usage by this column group
     bool exhausted = false;      // Whether this column group has no more data
 
@@ -449,20 +461,9 @@ class PackedRecordBatchReader : public arrow::RecordBatchReader {
   std::vector<std::shared_ptr<arrow::RecordBatch>> all_batches_;  // Simplified storage for all batches
 
   /**
-   * @brief Initialize format readers for all column groups
-   */
-  arrow::Status initialize();
-
-  /**
-   * @brief Advance the buffer by reading more data from column groups (similar to packed reader)
+   * @brief Advance the buffer by reading more data from column groups
    */
   arrow::Status advanceBuffer();
-
-  /**
-   * @brief Combine batches from different column groups into a single batch
-   */
-  arrow::Result<std::shared_ptr<arrow::RecordBatch>> combine_batches(
-      const std::vector<std::shared_ptr<arrow::RecordBatch>>& batches);
 };
 
 }  // namespace milvus_storage::api

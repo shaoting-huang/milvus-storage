@@ -16,6 +16,8 @@
 #include "milvus-storage/writer.h"
 #include "milvus-storage/format/parquet/file_reader.h"
 #include "milvus-storage/format/parquet/file_writer.h"
+#include "milvus-storage/format/binary/file_reader.h"
+#include "milvus-storage/format/binary/file_writer.h"
 #include "milvus-storage/common/config.h"
 #include <parquet/arrow/reader.h>
 #include <parquet/metadata.h>
@@ -43,27 +45,37 @@ std::unique_ptr<milvus_storage::api::ChunkReader> ChunkReaderFactory::create_rea
     }
   }
 
-  if (column_group->format == milvus_storage::api::FileFormat::PARQUET) {
-    // All PARQUET files now have packed metadata
-    const int64_t default_buffer_size = 32 * 1024 * 1024;  // 32MB default
-    auto reader = std::make_unique<milvus_storage::FileRowGroupReader>(
-        fs, file_path, default_buffer_size, parquet::default_reader_properties(), filtered_columns);
+  switch (column_group->format) {
+    case milvus_storage::api::FileFormat::PARQUET: {
+      // All PARQUET files now have packed metadata
+      const int64_t default_buffer_size = 32 * 1024 * 1024;  // 32MB default
+      auto reader = std::make_unique<milvus_storage::FileRowGroupReader>(
+          fs, file_path, default_buffer_size, parquet::default_reader_properties(), filtered_columns);
 
-    // Set up to read all row groups by default
-    auto metadata = reader->file_metadata();
-    if (metadata) {
-      int total_row_groups = metadata->GetRowGroupMetadataVector().size();
-      if (total_row_groups > 0) {
-        auto status = reader->SetRowGroupOffsetAndCount(0, total_row_groups);
-        if (!status.ok()) {
-          throw std::runtime_error("Failed to set row group range: " + status.ToString());
+      // Set up to read all row groups by default
+      auto metadata = reader->file_metadata();
+      if (metadata) {
+        int total_row_groups = metadata->GetRowGroupMetadataVector().size();
+        if (total_row_groups > 0) {
+          auto status = reader->SetRowGroupOffsetAndCount(0, total_row_groups);
+          if (!status.ok()) {
+            throw std::runtime_error("Failed to set row group range: " + status.ToString());
+          }
         }
       }
+      return reader;
     }
-    return reader;
-  } else {
-    throw std::runtime_error("Unsupported file format: " + std::to_string(static_cast<int>(column_group->format)) +
-                             ". Only PARQUET is supported.");
+    case milvus_storage::api::FileFormat::BINARY: {
+      auto reader = std::make_unique<milvus_storage::BinaryFileReader>(fs, file_path, filtered_columns);
+      auto init_status = reader->Init();
+      if (!init_status.ok()) {
+        throw std::runtime_error("Failed to initialize BinaryFileReader: " + init_status.ToString());
+      }
+      return reader;
+    }
+    default:
+      throw std::runtime_error("Unsupported file format: " + std::to_string(static_cast<int>(column_group->format)) +
+                               ". Only PARQUET and BINARY are supported.");
   }
 }
 
@@ -83,10 +95,6 @@ std::unique_ptr<milvus_storage::api::ColumnGroupWriter> ChunkWriterFactory::crea
     throw std::runtime_error("Schema cannot be null");
   }
 
-  if (column_group->format != milvus_storage::api::FileFormat::PARQUET) {
-    throw std::runtime_error("Only PARQUET format is supported for now");
-  }
-
   // Create schema with only the columns for this column group
   std::vector<std::shared_ptr<arrow::Field>> fields;
   for (const auto& column_name : column_group->columns) {
@@ -98,13 +106,25 @@ std::unique_ptr<milvus_storage::api::ColumnGroupWriter> ChunkWriterFactory::crea
   }
   auto column_group_schema = arrow::schema(fields);
 
-  auto writer = std::make_unique<milvus_storage::ParquetFileWriter>(
-      column_group_schema, fs, column_group->path, storage_config, parquet::default_writer_properties());
+  std::unique_ptr<milvus_storage::api::ColumnGroupWriter> writer;
+
+  switch (column_group->format) {
+    case milvus_storage::api::FileFormat::PARQUET:
+      writer = std::make_unique<milvus_storage::ParquetFileWriter>(
+          column_group_schema, fs, column_group->path, storage_config, parquet::default_writer_properties());
+      break;
+    case milvus_storage::api::FileFormat::BINARY:
+      writer = std::make_unique<milvus_storage::BinaryFileWriter>(column_group_schema, fs, column_group->path,
+                                                                  storage_config);
+      break;
+    default:
+      throw std::runtime_error("Only PARQUET and BINARY formats are supported");
+  }
 
   // Initialize the writer
   auto init_status = writer->Init();
   if (!init_status.ok()) {
-    throw std::runtime_error("Failed to initialize ParquetFileWriter: " + init_status.ToString());
+    throw std::runtime_error("Failed to initialize writer: " + init_status.ToString());
   }
 
   // Add custom metadata to the writer

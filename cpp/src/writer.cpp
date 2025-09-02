@@ -206,7 +206,7 @@ arrow::Status Writer::flush() {
     return arrow::Status::Invalid("Cannot flush closed writer");
   }
 
-  // Flush all column group writers (user triggered - flush all buffers)
+  // Flush all column group writers
   for (auto& [column_group_id, writer] : column_group_writers_) {
     auto status = writer->Flush();
     if (!status.ok()) {
@@ -214,7 +214,7 @@ arrow::Status Writer::flush() {
     }
   }
 
-  // Clear memory tracking since all buffers are flushed
+  // Clear memory tracking
   current_memory_usage_ = 0;
   while (!memory_heap_.empty()) {
     memory_heap_.pop();
@@ -236,20 +236,17 @@ arrow::Result<std::shared_ptr<Manifest>> Writer::close() {
 
   // Close all column group writers and write packed metadata
   for (auto& [column_group_id, writer] : column_group_writers_) {
-    // Write group field id list metadata before closing
+    // Write group field id list metadata before closing, for compatibility with old packed writer
     auto status = writer->AppendKVMetadata(GROUP_FIELD_ID_LIST_META_KEY, field_id_list_meta);
     if (!status.ok()) {
       return arrow::Status::IOError("Failed to write group field id list: " + status.ToString());
     }
 
-    // Add user metadata (convert custom_metadata_ to vector format)
-    std::vector<std::pair<std::string, std::string>> metadata_vector;
     for (const auto& [key, value] : custom_metadata_) {
-      metadata_vector.emplace_back(key, value);
-    }
-    status = writer->AddUserMetadata(metadata_vector);
-    if (!status.ok()) {
-      return arrow::Status::IOError("Failed to add user metadata: " + status.ToString());
+      status = writer->AppendKVMetadata(key, value);
+      if (!status.ok()) {
+        return arrow::Status::IOError("Failed to write user metadata: " + status.ToString());
+      }
     }
 
     status = writer->Close();
@@ -258,23 +255,20 @@ arrow::Result<std::shared_ptr<Manifest>> Writer::close() {
     }
   }
 
-  // Update ColumnGroup statistics from format writers and accumulate final statistics
-  stats_ = {};
+  // Update ColumnGroup statistics from column group writers
   for (const auto& [column_group_id, writer] : column_group_writers_) {
     auto row_count = writer->count();
-    stats_.rows_written = row_count;  // All writers should have same row count
-    stats_.batches_written = 1;       // Approximation
+    stats_.rows_written = row_count;
+    stats_.batches_written = 1;
     stats_.bytes_written += writer->bytes_written();
     stats_.column_groups_count += 1;
 
-    // Update the corresponding ColumnGroup's statistics
     auto column_groups = manifest_->get_column_groups();
     for (auto& column_group : column_groups) {
       if (column_group->id == column_group_id) {
         column_group->stats.num_rows = row_count;
-        column_group->stats.num_chunks =
-            writer->num_chunks();                 // Each column group is typically one chunk in our format
-        column_group->stats.compressed_size = 0;  // TODO: Get actual size
+        column_group->stats.num_chunks = writer->num_chunks();
+        column_group->stats.compressed_size = writer->bytes_written();  // TODO: Get actual compressed size
         column_group->stats.uncompressed_size = writer->bytes_written();
         break;
       }

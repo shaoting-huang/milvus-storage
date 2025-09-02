@@ -14,12 +14,11 @@
 
 #include "milvus-storage/common/config.h"
 #include "milvus-storage/common/constants.h"
-#include "milvus-storage/common/macro.h"
 #include "milvus-storage/common/metadata.h"
 #include "milvus-storage/common/arrow_util.h"
 #include "milvus-storage/format/parquet/file_writer.h"
+#include "milvus-storage/format/parquet/common.h"
 #include "milvus-storage/filesystem/s3/multi_part_upload_s3_fs.h"
-#include "milvus-storage/common/log.h"
 
 #include <parquet/properties.h>
 #include <boost/variant.hpp>
@@ -29,53 +28,6 @@
 
 namespace milvus_storage {
 
-/**
- * @brief Converts API compression type to parquet compression type
- */
-static parquet::Compression::type convert_compression_type(milvus_storage::api::CompressionType compression) {
-  switch (compression) {
-    case milvus_storage::api::CompressionType::UNCOMPRESSED:
-      return parquet::Compression::UNCOMPRESSED;
-    case milvus_storage::api::CompressionType::SNAPPY:
-      return parquet::Compression::SNAPPY;
-    case milvus_storage::api::CompressionType::GZIP:
-      return parquet::Compression::GZIP;
-    case milvus_storage::api::CompressionType::LZ4:
-      return parquet::Compression::LZ4;
-    case milvus_storage::api::CompressionType::ZSTD:
-      return parquet::Compression::ZSTD;
-    case milvus_storage::api::CompressionType::BROTLI:
-      return parquet::Compression::BROTLI;
-    default:
-      return parquet::Compression::ZSTD;
-  }
-}
-
-/**
- * @brief Converts WriteProperties to parquet::WriterProperties
- * TODO: support encryption
- */
-static std::shared_ptr<parquet::WriterProperties> convert_write_properties(
-    const milvus_storage::api::WriteProperties& properties) {
-  parquet::WriterProperties::Builder builder;
-
-  // Set compression
-  builder.compression(convert_compression_type(properties.compression));
-
-  builder.max_row_group_length(properties.max_row_group_size);
-
-  if (properties.compression_level >= 0) {
-    builder.compression_level(properties.compression_level);
-  }
-
-  if (properties.enable_dictionary) {
-    builder.enable_dictionary();
-  } else {
-    builder.disable_dictionary();
-  }
-  return builder.build();
-}
-
 ParquetFileWriter::ParquetFileWriter(std::shared_ptr<milvus_storage::api::ColumnGroup> column_group,
                                      std::shared_ptr<arrow::fs::FileSystem> fs,
                                      std::shared_ptr<arrow::Schema> schema,
@@ -84,13 +36,13 @@ ParquetFileWriter::ParquetFileWriter(std::shared_ptr<milvus_storage::api::Column
                         fs,
                         column_group->path,
                         StorageConfig{properties.multi_part_upload_size},
-                        convert_write_properties(properties)) {}
+                        milvus_storage::parquet::convert_write_properties(properties)) {}
 
 ParquetFileWriter::ParquetFileWriter(std::shared_ptr<arrow::Schema> schema,
                                      std::shared_ptr<arrow::fs::FileSystem> fs,
                                      const std::string& file_path,
                                      const StorageConfig& storage_config,
-                                     std::shared_ptr<parquet::WriterProperties> writer_props)
+                                     std::shared_ptr<::parquet::WriterProperties> writer_props)
     : schema_(std::move(schema)),
       fs_(std::move(fs)),
       file_path_(file_path),
@@ -101,13 +53,13 @@ ParquetFileWriter::ParquetFileWriter(std::shared_ptr<arrow::Schema> schema,
       cached_size_(0),
       cached_batches_(),
       cached_batch_sizes_() {
-  auto builder = parquet::WriterProperties::Builder(*writer_props);
+  auto builder = ::parquet::WriterProperties::Builder(*writer_props);
   if (writer_props->file_encryption_properties()) {
     auto deep_copied_decryption = writer_props->file_encryption_properties()->DeepClone();
     builder.encryption(std::move(deep_copied_decryption));
   }
-  if (writer_props->default_column_properties().compression() == parquet::Compression::UNCOMPRESSED) {
-    builder.compression(parquet::Compression::ZSTD);
+  if (writer_props->default_column_properties().compression() == ::parquet::Compression::UNCOMPRESSED) {
+    builder.compression(::parquet::Compression::ZSTD);
     builder.compression_level(3);
   }
   writer_props_ = builder.build();
@@ -135,8 +87,8 @@ arrow::Status ParquetFileWriter::Init() {
     ARROW_ASSIGN_OR_RAISE(sink, fs_->OpenOutputStream(file_path_));
   }
 
-  ARROW_ASSIGN_OR_RAISE(auto writer,
-                        parquet::arrow::FileWriter::Open(*schema_, arrow::default_memory_pool(), sink, writer_props_));
+  ARROW_ASSIGN_OR_RAISE(
+      auto writer, ::parquet::arrow::FileWriter::Open(*schema_, arrow::default_memory_pool(), sink, writer_props_));
 
   writer_ = std::move(writer);
   kv_metadata_ = std::make_shared<arrow::KeyValueMetadata>();

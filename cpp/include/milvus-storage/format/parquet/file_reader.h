@@ -66,6 +66,8 @@ class FileRowGroupReader : public milvus_storage::api::ChunkReader {
 
   [[nodiscard]] arrow::Result<int64_t> get_chunk_size(int64_t chunk_index) const override;
 
+  [[nodiscard]] arrow::Result<int64_t> get_chunk_row_num(int64_t chunk_index) const override;
+
   /**
    * @brief Closes the reader and releases resources.
    *

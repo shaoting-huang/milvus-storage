@@ -22,7 +22,6 @@
 #include "milvus-storage/writer.h"
 #include "milvus-storage/reader.h"
 #include "milvus-storage/manifest.h"
-#include "include/test_util.h"
 
 using namespace milvus_storage::api;
 
@@ -702,4 +701,447 @@ TEST_F(APIWriterReaderTest, RowAlignmentWithMultipleRowGroups) {
 
   EXPECT_EQ(total_rows, batch_size);
   EXPECT_GT(batch_count, 1);  // Should have multiple batches due to small buffer
+}
+
+// ============ Binary Format Tests ============
+
+TEST_F(APIWriterReaderTest, BinaryFormatSingleColumnGroup) {
+  // Test binary format with single column group
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {".*"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+
+  // Write test data
+  ASSERT_OK(writer.write(test_batch_));
+
+  // Close and get manifest
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Verify manifest
+  EXPECT_EQ(manifest->get_column_groups().size(), 1);
+  auto column_groups = manifest->get_column_groups();
+  EXPECT_EQ(column_groups[0]->format, FileFormat::BINARY);
+  EXPECT_EQ(column_groups[0]->columns.size(), 4);
+
+  // Test reading with binary format
+  Reader reader(fs_, manifest, schema_);
+
+  auto batch_reader_result = reader.get_record_batch_reader();
+  ASSERT_TRUE(batch_reader_result.ok()) << batch_reader_result.status().ToString();
+  auto batch_reader = std::move(batch_reader_result).ValueOrDie();
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  ASSERT_OK(batch_reader->ReadNext(&batch));
+  ASSERT_NE(batch, nullptr);
+  EXPECT_EQ(batch->num_rows(), 100);
+  EXPECT_EQ(batch->num_columns(), 4);
+
+  // Verify data content matches original
+  EXPECT_TRUE(batch->Equals(*test_batch_));
+
+  // Read until end
+  ASSERT_OK(batch_reader->ReadNext(&batch));
+  EXPECT_EQ(batch, nullptr);  // Should be at end
+}
+
+TEST_F(APIWriterReaderTest, BinaryFormatMultipleColumnGroups) {
+  // Test binary format with multiple column groups
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id|value"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"name"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"vector"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+
+  // Write test data
+  ASSERT_OK(writer.write(test_batch_));
+
+  // Add some metadata
+  ASSERT_OK(writer.add_metadata("format_test", "binary"));
+
+  // Close and get manifest
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Verify manifest has multiple column groups, all binary format
+  auto column_groups = manifest->get_column_groups();
+  EXPECT_EQ(column_groups.size(), 3);
+  for (const auto& cg : column_groups) {
+    EXPECT_EQ(cg->format, FileFormat::BINARY);
+  }
+
+  // Test reading with chunk reader
+  Reader reader(fs_, manifest, schema_);
+
+  auto chunk_reader_result = reader.get_chunk_reader(column_groups[0]->id);
+  ASSERT_TRUE(chunk_reader_result.ok()) << chunk_reader_result.status().ToString();
+  auto chunk_reader = std::move(chunk_reader_result).ValueOrDie();
+
+  auto chunk_result = chunk_reader->get_chunk(0);
+  ASSERT_TRUE(chunk_result.ok()) << chunk_result.status().ToString();
+  auto chunk = std::move(chunk_result).ValueOrDie();
+  ASSERT_NE(chunk, nullptr);
+  EXPECT_GT(chunk->num_rows(), 0);
+
+  // Test chunk size retrieval
+  auto chunk_size_result = chunk_reader->get_chunk_size(0);
+  ASSERT_TRUE(chunk_size_result.ok()) << chunk_size_result.status().ToString();
+  EXPECT_GT(chunk_size_result.ValueOrDie(), 0);
+}
+
+TEST_F(APIWriterReaderTest, BinaryFormatChunkAccess) {
+  // Test binary format chunk-based access
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {".*"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+
+  // Write multiple small batches to create multiple chunks
+  for (int i = 0; i < 5; ++i) {
+    // Create smaller batches for more chunks
+    arrow::Int64Builder id_builder;
+    arrow::StringBuilder name_builder;
+    arrow::DoubleBuilder value_builder;
+    arrow::ListBuilder vector_builder(arrow::default_memory_pool(), std::make_shared<arrow::FloatBuilder>());
+
+    for (int j = 0; j < 20; ++j) {
+      int64_t value = i * 20 + j;
+      ASSERT_OK(id_builder.Append(value));
+      ASSERT_OK(name_builder.Append("name_" + std::to_string(value)));
+      ASSERT_OK(value_builder.Append(value * 1.5));
+
+      auto vector_element_builder = static_cast<arrow::FloatBuilder*>(vector_builder.value_builder());
+      ASSERT_OK(vector_builder.Append());
+      for (int k = 0; k < 4; ++k) {
+        ASSERT_OK(vector_element_builder->Append(value * 0.1f + k));
+      }
+    }
+
+    std::shared_ptr<arrow::Array> id_array, name_array, value_array, vector_array;
+    ASSERT_OK(id_builder.Finish(&id_array));
+    ASSERT_OK(name_builder.Finish(&name_array));
+    ASSERT_OK(value_builder.Finish(&value_array));
+    ASSERT_OK(vector_builder.Finish(&vector_array));
+
+    auto batch = arrow::RecordBatch::Make(schema_, 20, {id_array, name_array, value_array, vector_array});
+    ASSERT_OK(writer.write(batch));
+  }
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Test chunk access
+  Reader reader(fs_, manifest, schema_);
+  auto column_groups = manifest->get_column_groups();
+
+  auto chunk_reader_result = reader.get_chunk_reader(column_groups[0]->id);
+  ASSERT_TRUE(chunk_reader_result.ok()) << chunk_reader_result.status().ToString();
+  auto chunk_reader = std::move(chunk_reader_result).ValueOrDie();
+
+  // Each write should create one chunk (since binary format stores each row as a chunk conceptually,
+  // but our implementation creates one chunk per batch)
+  int total_chunks = 0;
+  int chunk_index = 0;
+
+  while (true) {
+    auto chunk_result = chunk_reader->get_chunk(chunk_index);
+    if (!chunk_result.ok()) {
+      break;  // No more chunks
+    }
+
+    auto chunk = std::move(chunk_result).ValueOrDie();
+    if (chunk == nullptr) {
+      break;
+    }
+
+    total_chunks++;
+    EXPECT_EQ(chunk->num_rows(), 20);
+    EXPECT_EQ(chunk->num_columns(), 4);
+
+    // Verify chunk data integrity
+    auto id_column = std::static_pointer_cast<arrow::Int64Array>(chunk->column(0));
+    for (int i = 0; i < chunk->num_rows(); ++i) {
+      int64_t expected_base = (chunk_index * 20);
+      EXPECT_EQ(id_column->Value(i), expected_base + i);
+    }
+
+    chunk_index++;
+  }
+
+  EXPECT_EQ(total_chunks, 5);  // Should have 5 chunks for 5 batches
+}
+
+TEST_F(APIWriterReaderTest, BinaryFormatRandomAccess) {
+  // Test binary format random access capabilities
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {".*"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+  ASSERT_OK(writer.write(test_batch_));
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Test random access reading
+  Reader reader(fs_, manifest, schema_);
+
+  // Test take with specific row indices
+  std::vector<int64_t> row_indices = {0, 10, 25, 50, 75, 99};
+  auto take_result = reader.take(row_indices);
+  ASSERT_TRUE(take_result.ok()) << take_result.status().ToString();
+  auto result_batch = std::move(take_result).ValueOrDie();
+
+  ASSERT_NE(result_batch, nullptr);
+  EXPECT_GT(result_batch->num_rows(), 0);
+  EXPECT_EQ(result_batch->num_columns(), 4);
+
+  // Verify data correctness using our validation helper
+  ValidateRowAlignment(result_batch);
+}
+
+// ============ Mixed Binary and Parquet Format Tests ============
+
+TEST_F(APIWriterReaderTest, MixedBinaryParquetFormats) {
+  // Test mixing binary and parquet formats in same dataset
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id|name"}, .format = FileFormat::PARQUET},
+                                            {.column_patterns = {"value"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"vector"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+
+  // Write test data
+  ASSERT_OK(writer.write(test_batch_));
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Verify mixed formats in manifest
+  auto column_groups = manifest->get_column_groups();
+  EXPECT_EQ(column_groups.size(), 3);
+
+  // Find and verify each format
+  bool found_parquet = false, found_binary = false;
+  for (const auto& cg : column_groups) {
+    if (cg->format == FileFormat::PARQUET) {
+      found_parquet = true;
+      EXPECT_EQ(cg->columns.size(), 2);  // id and name
+    } else if (cg->format == FileFormat::BINARY) {
+      found_binary = true;
+      EXPECT_EQ(cg->columns.size(), 1);  // value or vector
+    }
+  }
+  EXPECT_TRUE(found_parquet);
+  EXPECT_TRUE(found_binary);
+
+  // Test reading mixed formats
+  Reader reader(fs_, manifest, schema_);
+
+  auto batch_reader_result = reader.get_record_batch_reader();
+  ASSERT_TRUE(batch_reader_result.ok()) << batch_reader_result.status().ToString();
+  auto batch_reader = std::move(batch_reader_result).ValueOrDie();
+
+  std::shared_ptr<arrow::RecordBatch> batch;
+  ASSERT_OK(batch_reader->ReadNext(&batch));
+  ASSERT_NE(batch, nullptr);
+  EXPECT_EQ(batch->num_rows(), 100);
+  EXPECT_EQ(batch->num_columns(), 4);
+
+  // Verify data content matches despite mixed formats
+  EXPECT_TRUE(batch->Equals(*test_batch_));
+}
+
+TEST_F(APIWriterReaderTest, MixedFormatRowAlignment) {
+  // Test row alignment with mixed binary and parquet formats
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"name"}, .format = FileFormat::PARQUET},
+                                            {.column_patterns = {"value"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"vector"}, .format = FileFormat::PARQUET}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+
+  // Write multiple batches
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_OK(writer.write(test_batch_));
+  }
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Verify mixed formats
+  auto column_groups = manifest->get_column_groups();
+  EXPECT_EQ(column_groups.size(), 4);
+
+  int binary_count = 0, parquet_count = 0;
+  for (const auto& cg : column_groups) {
+    if (cg->format == FileFormat::BINARY)
+      binary_count++;
+    else if (cg->format == FileFormat::PARQUET)
+      parquet_count++;
+  }
+  EXPECT_EQ(binary_count, 2);
+  EXPECT_EQ(parquet_count, 2);
+
+  // Test row alignment across mixed formats
+  Reader reader(fs_, manifest, schema_);
+
+  auto batch_reader_result = reader.get_record_batch_reader();
+  ASSERT_TRUE(batch_reader_result.ok()) << batch_reader_result.status().ToString();
+  auto batch_reader = std::move(batch_reader_result).ValueOrDie();
+
+  int total_rows = 0;
+  std::shared_ptr<arrow::RecordBatch> batch;
+
+  while (true) {
+    ASSERT_OK(batch_reader->ReadNext(&batch));
+    if (batch == nullptr) {
+      break;
+    }
+
+    total_rows += batch->num_rows();
+
+    // Verify row alignment across mixed formats
+    EXPECT_EQ(batch->num_columns(), 4);
+    for (int i = 0; i < batch->num_columns(); ++i) {
+      EXPECT_EQ(batch->column(i)->length(), batch->num_rows());
+    }
+
+    ValidateRowAlignment(batch);
+  }
+
+  EXPECT_EQ(total_rows, 3 * 100);  // 3 batches × 100 rows each
+}
+
+TEST_F(APIWriterReaderTest, MixedFormatChunkReading) {
+  // Test individual chunk reading with mixed formats
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id|name"}, .format = FileFormat::PARQUET},
+                                            {.column_patterns = {"value|vector"}, .format = FileFormat::BINARY}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+  ASSERT_OK(writer.write(test_batch_));
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  auto column_groups = manifest->get_column_groups();
+  EXPECT_EQ(column_groups.size(), 2);
+
+  Reader reader(fs_, manifest, schema_);
+
+  // Test both parquet and binary chunk readers
+  for (const auto& cg : column_groups) {
+    auto chunk_reader_result = reader.get_chunk_reader(cg->id);
+    ASSERT_TRUE(chunk_reader_result.ok()) << chunk_reader_result.status().ToString();
+    auto chunk_reader = std::move(chunk_reader_result).ValueOrDie();
+
+    auto chunk_result = chunk_reader->get_chunk(0);
+    ASSERT_TRUE(chunk_result.ok()) << chunk_result.status().ToString();
+    auto chunk = std::move(chunk_result).ValueOrDie();
+    ASSERT_NE(chunk, nullptr);
+
+    // Verify chunk has expected columns based on format
+    if (cg->format == FileFormat::PARQUET) {
+      EXPECT_EQ(cg->columns.size(), 2);  // id and name
+    } else if (cg->format == FileFormat::BINARY) {
+      EXPECT_EQ(cg->columns.size(), 2);  // value and vector
+    }
+
+    EXPECT_EQ(chunk->num_rows(), 100);
+    EXPECT_EQ(chunk->num_columns(), cg->columns.size());
+
+    // Test chunk size retrieval
+    auto chunk_size_result = chunk_reader->get_chunk_size(0);
+    ASSERT_TRUE(chunk_size_result.ok()) << chunk_size_result.status().ToString();
+    EXPECT_GT(chunk_size_result.ValueOrDie(), 0);
+  }
+}
+
+TEST_F(APIWriterReaderTest, MixedFormatRandomAccess) {
+  // Test random access with mixed formats
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"name|value|vector"}, .format = FileFormat::PARQUET}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy));
+  ASSERT_OK(writer.write(test_batch_));
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Test random access reading with mixed formats
+  Reader reader(fs_, manifest, schema_);
+
+  std::vector<int64_t> row_indices = {5, 15, 35, 55, 85, 95};
+  auto take_result = reader.take(row_indices);
+  ASSERT_TRUE(take_result.ok()) << take_result.status().ToString();
+  auto result_batch = std::move(take_result).ValueOrDie();
+
+  ASSERT_NE(result_batch, nullptr);
+  EXPECT_GT(result_batch->num_rows(), 0);
+  EXPECT_EQ(result_batch->num_columns(), 4);
+
+  // Verify row alignment across mixed formats
+  ValidateRowAlignment(result_batch);
+}
+
+TEST_F(APIWriterReaderTest, MixedFormatLargeDataset) {
+  // Test mixed formats with larger dataset and multiple row groups
+  std::vector<ColumnGroupConfig> configs = {{.column_patterns = {"id|value"}, .format = FileFormat::BINARY},
+                                            {.column_patterns = {"name|vector"}, .format = FileFormat::PARQUET}};
+  auto policy = std::make_unique<SchemaBasedColumnGroupPolicy>(schema_, configs);
+
+  auto properties = WritePropertiesBuilder()
+                        .with_max_row_group_size(50)  // Small row groups to force multiple chunks
+                        .build();
+
+  Writer writer(fs_, base_path_, schema_, std::move(policy), properties);
+
+  // Write multiple batches
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_OK(writer.write(test_batch_));
+  }
+
+  auto manifest_result = writer.close();
+  ASSERT_TRUE(manifest_result.ok()) << manifest_result.status().ToString();
+  auto manifest = std::move(manifest_result).ValueOrDie();
+
+  // Test reading large mixed format dataset
+  Reader reader(fs_, manifest, schema_);
+
+  auto batch_reader_result = reader.get_record_batch_reader();
+  ASSERT_TRUE(batch_reader_result.ok()) << batch_reader_result.status().ToString();
+  auto batch_reader = std::move(batch_reader_result).ValueOrDie();
+
+  int total_rows = 0;
+  int batch_count = 0;
+  std::shared_ptr<arrow::RecordBatch> batch;
+
+  while (true) {
+    ASSERT_OK(batch_reader->ReadNext(&batch));
+    if (batch == nullptr) {
+      break;
+    }
+
+    batch_count++;
+    total_rows += batch->num_rows();
+
+    // Verify consistency across mixed formats
+    EXPECT_EQ(batch->num_columns(), 4);
+    ValidateRowAlignment(batch);
+  }
+
+  EXPECT_EQ(total_rows, 10 * 100);  // 10 batches × 100 rows each
+  EXPECT_GT(batch_count, 1);        // Should have multiple output batches due to small row groups
 }
