@@ -105,7 +105,7 @@ if (WITH_JNI)
   set(JAVA_INCLUDE_PATH2 "${JAVA_HOME}/include/linux")
 
   add_library(milvus-storage-jni SHARED
-    src/ffi/reader_writer_jni.cpp
+    src/ffi/jni.cpp
   )
 
   target_include_directories(milvus-storage-jni PRIVATE

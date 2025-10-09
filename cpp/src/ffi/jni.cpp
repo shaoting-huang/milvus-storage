@@ -567,34 +567,24 @@ JNIEXPORT void JNICALL Java_io_milvus_storage_MilvusStorageChunkReader_chunkRead
 JNIEXPORT void JNICALL Java_io_milvus_storage_ArrowUtils_00024_releaseArrowArray(JNIEnv* env,
                                                                                  jobject obj,
                                                                                  jlong array_ptr) {
-  try {
-    ArrowArray* array = reinterpret_cast<ArrowArray*>(array_ptr);
-    if (array != nullptr) {
-      if (array->release != nullptr) {
-        array->release(array);
-      }
-      free(array);
+  ArrowArray* array = reinterpret_cast<ArrowArray*>(array_ptr);
+  if (array != nullptr) {
+    if (array->release != nullptr) {
+      array->release(array);
     }
-  } catch (...) {
-    jclass exc_class = env->FindClass("java/lang/RuntimeException");
-    env->ThrowNew(exc_class, "Failed to release arrow array");
+    free(array);
   }
 }
 
 JNIEXPORT void JNICALL Java_io_milvus_storage_ArrowUtils_00024_releaseArrowStream(JNIEnv* env,
                                                                                   jobject obj,
                                                                                   jlong stream_ptr) {
-  try {
-    ArrowArrayStream* stream = reinterpret_cast<ArrowArrayStream*>(stream_ptr);
-    if (stream != nullptr) {
-      if (stream->release != nullptr) {
-        stream->release(stream);
-      }
-      free(stream);
+  ArrowArrayStream* stream = reinterpret_cast<ArrowArrayStream*>(stream_ptr);
+  if (stream != nullptr) {
+    if (stream->release != nullptr) {
+      stream->release(stream);
     }
-  } catch (...) {
-    jclass exc_class = env->FindClass("java/lang/RuntimeException");
-    env->ThrowNew(exc_class, "Failed to release arrow stream");
+    free(stream);
   }
 }
 

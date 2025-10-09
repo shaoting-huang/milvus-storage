@@ -303,6 +303,17 @@ JNIEXPORT void JNICALL Java_io_milvus_storage_ArrowUtils_00024_releaseArrowStrea
                                                                                   jobject obj,
                                                                                   jlong stream_ptr);
 
+/**
+ * @brief Release single ArrowArray
+ *
+ * @param env JNI environment
+ * @param obj Java object
+ * @param array_ptr Pointer to ArrowArray
+ */
+JNIEXPORT void JNICALL Java_io_milvus_storage_ArrowUtils_00024_releaseArrowArray(JNIEnv* env,
+                                                                                 jobject obj,
+                                                                                 jlong array_ptr);
+
 #ifdef __cplusplus
 }
 #endif

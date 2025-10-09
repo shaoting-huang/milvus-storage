@@ -43,7 +43,7 @@ object ArrowUtils {
   }
 
   /**
-   * Release Arrow stream (record batch reader)
+   * Release Arrow stream
    * @param streamPtr Pointer to ArrowArrayStream
    */
   @native def releaseArrowStream(streamPtr: Long): Unit
